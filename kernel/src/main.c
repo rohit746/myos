@@ -3,6 +3,7 @@
 #include <arch.h>
 #include <console.h>
 #include <cpu.h>
+#include <kheap.h>
 #include <kprintf.h>
 #include <limine.h>
 #include <memory.h>
@@ -199,6 +200,17 @@ void kmain(void) {
     vmm_self_test();
     ok(vm.nx ? "paging self-test passed (map/unmap; .text, .rodata read-only; .data no-execute)"
              : "paging self-test passed (map/unmap; .text, .rodata read-only; CPU has no NX)");
+
+    kheap_init();
+    ksnprintf(line, sizeof line, "kernel heap at %p (grows on demand, up to %lu GiB)", (void *)KHEAP_BASE,
+              KHEAP_MAX_SIZE >> 30);
+    ok(line);
+
+    kheap_self_test();
+    struct kheap_stats heap = kheap_get_stats();
+    ksnprintf(line, sizeof line, "heap self-test passed (%lu allocations and %lu frees, no leaks, %lu KiB mapped)",
+              heap.total_allocs, heap.total_frees, heap.heap_bytes / 1024);
+    ok(line);
 
 #ifdef MYOS_CRASH_TEST
     // `make crash-test`: touch an unmapped address to exercise the

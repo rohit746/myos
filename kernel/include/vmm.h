@@ -49,6 +49,7 @@ struct vmm_stats {
     uint64_t table_pages;                    // pages used by the page tables
     uint64_t pages_1g, pages_2m, pages_4k;   // leaf mappings, by size
     bool nx;                                 // no-execute is supported and on
+    uint64_t hhdm_end; // physical address just past the highest page in the HHDM
 };
 
 struct vmm_stats vmm_get_stats(void);
