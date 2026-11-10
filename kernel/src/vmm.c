@@ -223,6 +223,7 @@ static void map_hhdm(struct limine_memmap_response *mm) {
     }
     if (run_end > run_start)
         map_range(&kernel_space, hhdm_offset + run_start, run_start, run_end - run_start, run_flags);
+    stats.hhdm_end = run_end;
 }
 
 static void program_pat(void) {
