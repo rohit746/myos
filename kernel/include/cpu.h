@@ -13,9 +13,21 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
+// A short delay for old ISA devices such as the 8259 PIC: port 0x80 is the
+// POST code port, which nothing reads.
+static inline void io_wait(void) { outb(0x80, 0); }
+
 static inline void cli(void) { __asm__ volatile("cli" ::: "memory"); }
 static inline void sti(void) { __asm__ volatile("sti" ::: "memory"); }
 static inline void hlt(void) { __asm__ volatile("hlt" ::: "memory"); }
+
+#define RFLAGS_IF (1ull << 9)
+
+static inline uint64_t read_rflags(void) {
+    uint64_t v;
+    __asm__ volatile("pushfq; popq %0" : "=r"(v) : : "memory");
+    return v;
+}
 
 static inline uint64_t read_cr0(void) { uint64_t v; __asm__ volatile("mov %%cr0, %0" : "=r"(v)); return v; }
 static inline uint64_t read_cr2(void) { uint64_t v; __asm__ volatile("mov %%cr2, %0" : "=r"(v)); return v; }

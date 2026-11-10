@@ -1,6 +1,7 @@
 // myos kernel entry.
 
 #include <acpi.h>
+#include <apic.h>
 #include <arch.h>
 #include <console.h>
 #include <cpu.h>
@@ -67,6 +68,20 @@ static void breakpoint_handler(struct interrupt_frame *f) {
     breakpoint_hit = true;
 }
 
+// The PIT (8254 timer), only used here to prove a device IRQ gets through.
+#define PIT_CHANNEL0 0x40
+#define PIT_COMMAND  0x43
+#define PIT_HZ       1193182
+#define PIT_TEST_HZ  100
+#define PIT_TEST_TICKS 3
+
+static volatile uint64_t pit_ticks;
+
+static void pit_handler(struct interrupt_frame *f) {
+    (void)f;
+    pit_ticks++;
+}
+
 static void ok(const char *what) {
     console_set_color(COLOR_GREEN, COLOR_BG);
     kprintf("  [ ok ] ");
@@ -87,6 +102,42 @@ static const char *memmap_type_name(uint64_t type) {
     case LIMINE_MEMMAP_RESERVED_MAPPED: return "reserved (mapped)";
     default: return "unknown";
     }
+}
+
+// Run the PIT at 100 Hz on ISA IRQ 0 and wait for a few ticks to arrive
+// through the I/O APIC. Interrupts must be on. A machine without a PIT (some
+// newer laptops gate it off) gets a warning, not a panic.
+static void irq_self_test(char *line, size_t size) {
+    uint32_t gsi = irq_register(0, pit_handler);
+    uint16_t divisor = PIT_HZ / PIT_TEST_HZ;
+    outb(PIT_COMMAND, 0x34); // channel 0, low then high byte, mode 2 (rate generator)
+    outb(PIT_CHANNEL0, divisor & 0xff);
+    outb(PIT_CHANNEL0, divisor >> 8);
+
+    // Time out by watching the PIT's own counter, which runs whether or not
+    // its IRQ gets through: each time it reloads, 10 ms have passed. Give up
+    // after 200 ms, or after many reads if the counter never moves (no PIT).
+    uint16_t last = divisor;
+    unsigned periods = 0;
+    for (uint32_t reads = 0; pit_ticks < PIT_TEST_TICKS && periods < 20 && reads < 1000000; reads++) {
+        outb(PIT_COMMAND, 0x00); // latch channel 0's count
+        uint16_t count = inb(PIT_CHANNEL0);
+        count |= (uint16_t)inb(PIT_CHANNEL0) << 8;
+        if (count > last) periods++;
+        last = count;
+    }
+    irq_unregister(0);
+    uint64_t ticks = pit_ticks;
+
+    if (ticks < PIT_TEST_TICKS) {
+        console_set_color(COLOR_YELLOW, COLOR_BG);
+        kprintf("  [warn] IRQ self-test: %lu of %d PIT ticks arrived (IRQ 0 -> GSI %u); no PIT?\n", ticks,
+                PIT_TEST_TICKS, gsi);
+        console_set_color(COLOR_WHITE, COLOR_BG);
+        line[0] = '\0';
+        return;
+    }
+    ksnprintf(line, size, "IRQ self-test passed (PIT IRQ 0 -> GSI %u through the I/O APIC, %lu ticks)", gsi, ticks);
 }
 
 static void print_cpu(void) {
@@ -224,6 +275,19 @@ void kmain(void) {
     ok(line);
     acpi_print_summary();
 
+    apic_init();
+    struct apic_info apic = apic_get_info();
+    ksnprintf(line, sizeof line, "local APIC %u enabled (%s mode), I/O APIC pins masked (%u), 8259 PICs %s",
+              apic.lapic_id, apic.x2apic ? "x2APIC" : "xAPIC", apic.ioapic_pins,
+              acpi->pcat_compat ? "remapped and masked" : "absent");
+    ok(line);
+
+    sti();
+    ok("interrupts enabled");
+
+    irq_self_test(line, sizeof line);
+    if (line[0]) ok(line);
+
 #ifdef MYOS_CRASH_TEST
     // `make crash-test`: touch an unmapped address to exercise the
     // page-fault handler and the crash screen.
@@ -231,10 +295,13 @@ void kmain(void) {
     *(volatile uint64_t *)0xdeadbeef000 = 42;
 #endif
 
+    if (!(read_rflags() & RFLAGS_IF)) panic("interrupts were turned off during boot");
+
     kprintf("\n");
     console_set_color(COLOR_YELLOW, COLOR_BG);
     kprintf("  Kernel is up. Nothing else to do yet, so this CPU is going to sleep.\n");
     console_set_color(COLOR_WHITE, COLOR_BG);
 
-    halt_forever();
+    // Sleep with interrupts on, so IRQs still get handled.
+    for (;;) hlt();
 }

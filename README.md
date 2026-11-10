@@ -70,6 +70,7 @@ kernel/src/isr.S        256 interrupt entry stubs
 kernel/src/pmm.c        physical page allocator (bitmap)
 kernel/src/vmm.c        the kernel's own page tables, vmm_map/vmm_unmap
 kernel/src/acpi.c       ACPI tables: CPUs, I/O APICs, IRQ overrides, FADT, HPET, MCFG
+kernel/src/apic.c       local APIC (x2APIC when available), I/O APIC, irq_register; 8259 PICs masked
 kernel/src/console.c    text console drawn on the framebuffer
 kernel/src/serial.c     COM1 serial output (QEMU / debugging)
 kernel/src/kprintf.c    printf, snprintf, panic
