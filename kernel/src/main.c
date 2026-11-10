@@ -5,6 +5,8 @@
 #include <cpu.h>
 #include <kprintf.h>
 #include <limine.h>
+#include <memory.h>
+#include <pmm.h>
 #include <serial.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -166,6 +168,20 @@ void kmain(void) {
     ok("interrupt self-test passed (int3 handled and returned)");
 
     print_memory_map();
+    kprintf("\n");
+
+    if (hhdm_request.response == NULL) panic("bootloader did not provide the HHDM offset");
+    pmm_init(memmap_request.response, hhdm_request.response->offset);
+    struct pmm_stats mem = pmm_get_stats();
+    char line[96];
+    ksnprintf(line, sizeof line, "physical memory: %lu MiB total, %lu KiB used, %lu MiB free",
+              mem.total_pages * PAGE_SIZE / (1024 * 1024),
+              (mem.total_pages - mem.free_pages) * PAGE_SIZE / 1024,
+              mem.free_pages * PAGE_SIZE / (1024 * 1024));
+    ok(line);
+
+    pmm_self_test(memmap_request.response);
+    ok("page allocator self-test passed (pages allocated, written, checked and freed)");
 
 #ifdef MYOS_CRASH_TEST
     // `make crash-test`: touch an unmapped address to exercise the
