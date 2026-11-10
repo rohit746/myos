@@ -1,5 +1,6 @@
 // myos kernel entry.
 
+#include <acpi.h>
 #include <arch.h>
 #include <console.h>
 #include <cpu.h>
@@ -49,6 +50,10 @@ static volatile struct limine_firmware_type_request firmware_type_request = {
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_executable_address_request executable_address_request = {
     .id = LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID, .revision = 0};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_rsdp_request rsdp_request = {
+    .id = LIMINE_RSDP_REQUEST_ID, .revision = 0};
 
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
@@ -211,6 +216,13 @@ void kmain(void) {
     ksnprintf(line, sizeof line, "heap self-test passed (%lu allocations and %lu frees, no leaks, %lu KiB mapped)",
               heap.total_allocs, heap.total_frees, heap.heap_bytes / 1024);
     ok(line);
+
+    acpi_init(rsdp_request.response ? rsdp_request.response->address : NULL);
+    const struct acpi_info *acpi = acpi_get_info();
+    ksnprintf(line, sizeof line, "ACPI %s (OEM %s): %lu tables via the %s", acpi->revision >= 2 ? "2.0+" : "1.0",
+              acpi->oem_id, acpi->table_count, acpi->xsdt ? "XSDT" : "RSDT");
+    ok(line);
+    acpi_print_summary();
 
 #ifdef MYOS_CRASH_TEST
     // `make crash-test`: touch an unmapped address to exercise the

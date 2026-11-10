@@ -3,7 +3,8 @@
 #
 #   scripts/boot-test.sh <uefi|bios> <boot|crash> <iso> <logfile>
 #
-#   boot   pass when the kernel reports it's up; fail on any panic/exception
+#   boot   pass when the kernel reports it's up and ACPI found all the CPUs QEMU
+#          was given; fail on any panic/exception
 #   crash  pass when the crash screen for the deliberate page fault appears
 #
 # UEFI mode needs the firmware path in $OVMF. Timeout: $BOOT_TIMEOUT (seconds).
@@ -17,6 +18,8 @@ log=${4:?log path}
 timeout_s=${BOOT_TIMEOUT:-90}
 
 ok_marker="Kernel is up."
+smp=4 # CPUs QEMU gets; the ACPI summary must list them all
+cpus_marker="cpus:   $smp,"
 crash_marker="CPU EXCEPTION 14: Page fault"
 halted_marker="System halted."
 fail_re="KERNEL PANIC|CPU EXCEPTION"
@@ -25,7 +28,7 @@ fail_re="KERNEL PANIC|CPU EXCEPTION"
 mkdir -p "$(dirname "$log")"
 : > "$log"
 
-args=(-M q35 -m 512M -cpu max -vga std -display none -no-reboot
+args=(-M q35 -m 512M -cpu max -smp "$smp" -vga std -display none -no-reboot
       -serial "file:$log" -monitor none -cdrom "$iso")
 if [[ "$mode" == uefi ]]; then
     [[ -n "${OVMF:-}" && -f "${OVMF}" ]] || { echo "boot-test: UEFI firmware not found (set OVMF)"; exit 2; }
@@ -41,7 +44,10 @@ start=$SECONDS
 while (( SECONDS - start < timeout_s )); do
     if [[ "$expect" == boot ]]; then
         if grep -Eq "$fail_re" "$log"; then result=fail; break; fi
-        if grep -Fq "$ok_marker" "$log"; then result=pass; break; fi
+        if grep -Fq "$ok_marker" "$log"; then
+            grep -Fq "$cpus_marker" "$log" && result=pass || result=cpus
+            break
+        fi
     else
         if grep -Fq "$halted_marker" "$log"; then
             grep -Fq "$crash_marker" "$log" && result=pass || result=fail
@@ -60,6 +66,7 @@ pass)
     echo "PASS $label in $((SECONDS - start))s"
     exit 0 ;;
 fail)    echo "FAIL $label unexpected kernel output:" ;;
+cpus)    echo "FAIL $label ACPI did not report $smp CPUs (\"$cpus_marker\"):" ;;
 exited)  echo "FAIL $label QEMU exited early (triple fault / reset?):" ;;
 *)       echo "FAIL $label no result within ${timeout_s}s:" ;;
 esac
