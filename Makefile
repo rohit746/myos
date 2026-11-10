@@ -53,7 +53,7 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 SRCS := $(shell find kernel/src -name '*.c' -o -name '*.S')
 OBJS := $(SRCS:%=$(BUILD)/obj/%.o)
 
-QEMU_COMMON := qemu-system-x86_64 -M q35 -m 512M -cpu max \
+QEMU_COMMON := qemu-system-x86_64 -M q35 -m 512M -cpu max -smp 4 \
 	-serial stdio -no-reboot -no-shutdown
 
 .PHONY: all kernel run run-bios debug usb test test-crash crash-test compdb clean FORCE
