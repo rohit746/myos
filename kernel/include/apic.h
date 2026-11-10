@@ -6,6 +6,7 @@
 //   0x00-0x1f  CPU exceptions
 //   0x20-0x2f  the 8259 PICs, remapped out of the way and fully masked
 //   0x30-0x3f  ISA IRQs 0-15, through the I/O APIC (IRQ_VECTOR_BASE + irq)
+//   0xf0       local APIC timer
 //   0xff       local APIC spurious interrupt
 
 #include <arch.h>
@@ -14,6 +15,7 @@
 
 #define PIC_VECTOR_BASE      0x20
 #define IRQ_VECTOR_BASE      0x30
+#define LAPIC_TIMER_VECTOR   0xf0
 #define APIC_SPURIOUS_VECTOR 0xff
 
 #define ISA_IRQ_COUNT 16
@@ -29,6 +31,18 @@ void lapic_eoi(void);
 
 // This CPU's local APIC ID (the x2APIC ID in x2APIC mode).
 uint32_t lapic_id(void);
+
+// The local APIC timer counts down at its input clock divided by
+// LAPIC_TIMER_DIVIDER. Its rate is not architectural: time.c measures it.
+#define LAPIC_TIMER_DIVIDER 16
+
+// Load the timer with `count`. A periodic timer reloads `count` each time it
+// reaches 0; a one-shot one stops there. With `interrupt` it raises
+// LAPIC_TIMER_VECTOR at 0, otherwise it only counts.
+void lapic_timer_start(uint32_t count, bool periodic, bool interrupt);
+
+// What the timer has left to count down (0 when a one-shot one is done).
+uint32_t lapic_timer_count(void);
 
 // Route ISA IRQ `isa_irq` (0-15) to `handler` on this CPU and unmask it.
 // The MADT's interrupt source overrides decide the GSI, polarity and trigger

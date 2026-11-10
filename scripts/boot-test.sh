@@ -4,7 +4,8 @@
 #   scripts/boot-test.sh <uefi|bios> <boot|crash> <iso> <logfile>
 #
 #   boot   pass when the kernel reports it's up, ACPI found all the CPUs QEMU
-#          was given and a PIT IRQ came in through the I/O APIC; fail on any
+#          was given, a PIT IRQ came in through the I/O APIC and the timer
+#          tick ran at the calibrated rate; fail on any
 #          panic, exception or unhandled interrupt, also shortly after boot
 #          while the kernel idles with interrupts on
 #   crash  pass when the crash screen for the deliberate page fault appears
@@ -24,9 +25,10 @@ ok_marker="Kernel is up."
 smp=4 # CPUs QEMU gets; the ACPI summary must list them all
 cpus_marker="cpus:   $smp,"
 irq_marker="IRQ self-test passed"
+timer_marker="timer self-test passed"
 crash_marker="CPU EXCEPTION 14: Page fault"
 halted_marker="System halted."
-fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] IRQ"
+fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer)"
 
 [[ -f "$iso" ]] || { echo "boot-test: $iso not found"; exit 2; }
 mkdir -p "$(dirname "$log")"
@@ -51,6 +53,7 @@ while (( SECONDS - start < timeout_s )); do
         if grep -Fq "$ok_marker" "$log"; then
             if ! grep -Fq "$cpus_marker" "$log"; then result=cpus
             elif ! grep -Fq "$irq_marker" "$log"; then result=irq
+            elif ! grep -Fq "$timer_marker" "$log"; then result=timer
             else result=pass
             fi
             break
@@ -76,6 +79,7 @@ pass)
 fail)    echo "FAIL $label unexpected kernel output:" ;;
 cpus)    echo "FAIL $label ACPI did not report $smp CPUs (\"$cpus_marker\"):" ;;
 irq)     echo "FAIL $label no device IRQ through the I/O APIC (\"$irq_marker\"):" ;;
+timer)   echo "FAIL $label the timer tick did not pass its self-test (\"$timer_marker\"):" ;;
 exited)  echo "FAIL $label QEMU exited early (triple fault / reset?):" ;;
 *)       echo "FAIL $label no result within ${timeout_s}s:" ;;
 esac

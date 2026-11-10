@@ -56,11 +56,18 @@
 #define LAPIC_LVT_LINT0   0x350
 #define LAPIC_LVT_LINT1   0x360
 #define LAPIC_LVT_ERROR   0x370
+#define LAPIC_TIMER_INITIAL 0x380
+#define LAPIC_TIMER_CURRENT 0x390
+#define LAPIC_TIMER_DIVIDE  0x3e0
 
 #define SVR_ENABLE       (1u << 8)
 #define LVT_DELIVERY_NMI (4u << 8)
 #define LVT_ACTIVE_LOW   (1u << 13)
 #define LVT_MASKED       (1u << 16)
+#define LVT_TIMER_PERIODIC (1u << 17)
+
+#define TIMER_DIVIDE_BY_16 0x3 // divide configuration register encoding
+_Static_assert(LAPIC_TIMER_DIVIDER == 16, "TIMER_DIVIDE_BY_16 must match LAPIC_TIMER_DIVIDER");
 
 // I/O APIC: an index register and a data window.
 #define IOAPIC_REGSEL  0x00
@@ -124,6 +131,16 @@ uint32_t lapic_id(void) {
     uint32_t id = lapic_read(LAPIC_ID);
     return x2apic ? id : id >> 24;
 }
+
+void lapic_timer_start(uint32_t count, bool periodic, bool interrupt) {
+    lapic_write(LAPIC_TIMER_INITIAL, 0); // stop it while it is reprogrammed
+    lapic_write(LAPIC_TIMER_DIVIDE, TIMER_DIVIDE_BY_16);
+    lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | (periodic ? LVT_TIMER_PERIODIC : 0) |
+                                     (interrupt ? 0 : LVT_MASKED));
+    lapic_write(LAPIC_TIMER_INITIAL, count); // starts counting
+}
+
+uint32_t lapic_timer_count(void) { return lapic_read(LAPIC_TIMER_CURRENT); }
 
 static void spurious_handler(struct interrupt_frame *f) {
     (void)f;
