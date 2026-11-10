@@ -1,0 +1,182 @@
+// myos kernel entry.
+
+#include <arch.h>
+#include <console.h>
+#include <cpu.h>
+#include <kprintf.h>
+#include <limine.h>
+#include <serial.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+// ---------------------------------------------------------------------------
+// Limine requests. The bootloader scans the kernel image for these structures
+// and fills in their `response` pointers before jumping to _start.
+// ---------------------------------------------------------------------------
+
+__attribute__((used, section(".limine_requests_start")))
+static volatile uint64_t limine_requests_start[] = LIMINE_REQUESTS_START_MARKER;
+
+__attribute__((used, section(".limine_requests")))
+static volatile uint64_t limine_base_revision[] = LIMINE_BASE_REVISION(6);
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_framebuffer_request framebuffer_request = {
+    .id = LIMINE_FRAMEBUFFER_REQUEST_ID, .revision = 0};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST_ID, .revision = 0};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST_ID, .revision = 0};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_bootloader_info_request bootloader_info_request = {
+    .id = LIMINE_BOOTLOADER_INFO_REQUEST_ID, .revision = 0};
+
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_firmware_type_request firmware_type_request = {
+    .id = LIMINE_FIRMWARE_TYPE_REQUEST_ID, .revision = 0};
+
+__attribute__((used, section(".limine_requests_end")))
+static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
+
+// ---------------------------------------------------------------------------
+
+static volatile bool breakpoint_hit;
+
+static void breakpoint_handler(struct interrupt_frame *f) {
+    (void)f;
+    breakpoint_hit = true;
+}
+
+static void ok(const char *what) {
+    console_set_color(COLOR_GREEN, COLOR_BG);
+    kprintf("  [ ok ] ");
+    console_set_color(COLOR_WHITE, COLOR_BG);
+    kprintf("%s\n", what);
+}
+
+static const char *memmap_type_name(uint64_t type) {
+    switch (type) {
+    case LIMINE_MEMMAP_USABLE: return "usable";
+    case LIMINE_MEMMAP_RESERVED: return "reserved";
+    case LIMINE_MEMMAP_ACPI_RECLAIMABLE: return "ACPI reclaimable";
+    case LIMINE_MEMMAP_ACPI_NVS: return "ACPI NVS";
+    case LIMINE_MEMMAP_BAD_MEMORY: return "bad memory";
+    case LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE: return "bootloader reclaimable";
+    case LIMINE_MEMMAP_EXECUTABLE_AND_MODULES: return "kernel and modules";
+    case LIMINE_MEMMAP_FRAMEBUFFER: return "framebuffer";
+    case LIMINE_MEMMAP_RESERVED_MAPPED: return "reserved (mapped)";
+    default: return "unknown";
+    }
+}
+
+static void print_cpu(void) {
+    uint32_t a, b, c, d;
+    char vendor[13];
+    cpuid(0, 0, &a, &b, &c, &d);
+    memcpy(vendor + 0, &b, 4);
+    memcpy(vendor + 4, &d, 4);
+    memcpy(vendor + 8, &c, 4);
+    vendor[12] = '\0';
+
+    char brand[49] = "unknown";
+    cpuid(0x80000000, 0, &a, &b, &c, &d);
+    if (a >= 0x80000004) {
+        uint32_t *p = (uint32_t *)brand;
+        for (uint32_t leaf = 0x80000002; leaf <= 0x80000004; leaf++, p += 4)
+            cpuid(leaf, 0, &p[0], &p[1], &p[2], &p[3]);
+        brand[48] = '\0';
+    }
+    const char *name = brand;
+    while (*name == ' ') name++;
+    kprintf("  cpu:    %s (%s)\n", name, vendor);
+}
+
+static void print_memory_map(void) {
+    struct limine_memmap_response *mm = memmap_request.response;
+    if (mm == NULL) panic("bootloader did not provide a memory map");
+
+    uint64_t usable = 0;
+    kprintf("\n  memory map (%lu entries):\n", mm->entry_count);
+    for (uint64_t i = 0; i < mm->entry_count; i++) {
+        struct limine_memmap_entry *e = mm->entries[i];
+        if (e->type == LIMINE_MEMMAP_USABLE) usable += e->length;
+        console_set_color(e->type == LIMINE_MEMMAP_USABLE ? COLOR_GREEN : COLOR_GREY, COLOR_BG);
+        kprintf("    %016lx - %016lx  %8lu KiB  %s\n", e->base, e->base + e->length,
+                e->length / 1024, memmap_type_name(e->type));
+    }
+    console_set_color(COLOR_WHITE, COLOR_BG);
+    kprintf("  usable RAM: %lu MiB\n", usable / (1024 * 1024));
+}
+
+void kmain(void) {
+    serial_init();
+
+    if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision)) {
+        kprintf("myos: bootloader does not support Limine base revision 6\n");
+        halt_forever();
+    }
+
+    struct limine_framebuffer_response *fbr = framebuffer_request.response;
+    struct limine_framebuffer *fb = (fbr && fbr->framebuffer_count) ? fbr->framebuffers[0] : NULL;
+    bool have_screen = console_init(fb);
+
+    console_set_color(COLOR_CYAN, COLOR_BG);
+    kprintf("\n  myos 0.1\n\n");
+    console_set_color(COLOR_WHITE, COLOR_BG);
+
+    const char *firmware = "unknown";
+    if (firmware_type_request.response) {
+        switch (firmware_type_request.response->firmware_type) {
+        case LIMINE_FIRMWARE_TYPE_X86BIOS: firmware = "legacy BIOS"; break;
+        case LIMINE_FIRMWARE_TYPE_EFI32: firmware = "UEFI (32-bit)"; break;
+        case LIMINE_FIRMWARE_TYPE_EFI64: firmware = "UEFI (64-bit)"; break;
+        }
+    }
+    if (bootloader_info_request.response)
+        kprintf("  booted by %s %s via %s\n", bootloader_info_request.response->name,
+                bootloader_info_request.response->version, firmware);
+    if (have_screen)
+        kprintf("  screen: %lux%lu, %u bpp\n", fb->width, fb->height, fb->bpp);
+    else
+        kprintf("  screen: no usable 32-bit framebuffer, serial only\n");
+    if (hhdm_request.response)
+        kprintf("  physical memory mapped at %p\n", (void *)hhdm_request.response->offset);
+    print_cpu();
+    kprintf("\n");
+
+    gdt_init();
+    ok("GDT and TSS loaded");
+
+    idt_init();
+    ok("IDT loaded (256 vectors)");
+
+    // Prove the IDT works: trigger a breakpoint exception, let our handler
+    // run, and check that execution resumes here afterwards.
+    idt_set_handler(3, breakpoint_handler);
+    __asm__ volatile("int3");
+    idt_set_handler(3, NULL);
+    if (!breakpoint_hit) panic("breakpoint self-test: handler did not run");
+    ok("interrupt self-test passed (int3 handled and returned)");
+
+    print_memory_map();
+
+#ifdef MYOS_CRASH_TEST
+    // `make crash-test`: touch an unmapped address to exercise the
+    // page-fault handler and the crash screen.
+    kprintf("\n  crash test: writing to an unmapped address...\n");
+    *(volatile uint64_t *)0xdeadbeef000 = 42;
+#endif
+
+    kprintf("\n");
+    console_set_color(COLOR_YELLOW, COLOR_BG);
+    kprintf("  Kernel is up. Nothing else to do yet, so this CPU is going to sleep.\n");
+    console_set_color(COLOR_WHITE, COLOR_BG);
+
+    halt_forever();
+}

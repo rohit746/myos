@@ -1,0 +1,5 @@
+/build/
+/vendor/limine/limine
+*.dSYM/
+.DS_Store
+/compile_commands.json
