@@ -67,6 +67,8 @@ kernel/src/main.c       kmain + the requests that ask Limine for info
 kernel/src/gdt.c        segment descriptors + TSS (stacks for interrupts)
 kernel/src/idt.c        interrupt table, exception handling, crash screen
 kernel/src/isr.S        256 interrupt entry stubs
+kernel/src/pmm.c        physical page allocator (bitmap)
+kernel/src/vmm.c        the kernel's own page tables, vmm_map/vmm_unmap
 kernel/src/console.c    text console drawn on the framebuffer
 kernel/src/serial.c     COM1 serial output (QEMU / debugging)
 kernel/src/kprintf.c    printf, snprintf, panic

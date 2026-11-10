@@ -3,7 +3,8 @@ OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(_start)
 
 /* Separate segments so Limine can map each with the right permissions
- * (FLAGS: 4 = read, 2 = write, 1 = execute). */
+ * (FLAGS: 4 = read, 2 = write, 1 = execute). vmm.c maps the same ranges
+ * again in the kernel's own page tables, using the *_start/_end symbols. */
 PHDRS
 {
     limine_requests PT_LOAD FLAGS(6);
@@ -17,23 +18,30 @@ SECTIONS
     . = 0xffffffff80000000;
     kernel_start = .;
 
+    requests_start = .;
     .limine_requests : {
         KEEP(*(.limine_requests_start))
         KEEP(*(.limine_requests))
         KEEP(*(.limine_requests_end))
     } :limine_requests
+    requests_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    text_start = .;
     .text : {
         *(.text .text.*)
     } :text
+    text_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    rodata_start = .;
     .rodata : {
         *(.rodata .rodata.*)
     } :rodata
+    rodata_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    data_start = .;
     .data : {
         *(.data .data.*)
     } :data
@@ -42,6 +50,7 @@ SECTIONS
         *(.bss .bss.*)
         *(COMMON)
     } :data
+    data_end = .;
 
     kernel_end = .;
 
