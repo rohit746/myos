@@ -24,7 +24,8 @@ static const char plain[] =
 static const char shifted[] =
     "\0\x1b" "!@#$%^&*()_+" "\b\t" "QWERTYUIOP{}" "\n\0" "ASDFGHJKL:\"~" "\0|" "ZXCVBNM<>?" "\0*\0 ";
 
-// The keypad, 0x47-0x53. Digits and the dot only type with Num Lock on.
+// The keypad, 0x47-0x53. Digits and the dot type with Num Lock on, or with
+// Num Lock off and Shift held.
 static const char keypad[] = "789-456+1230.";
 
 _Static_assert(sizeof plain == 0x3a + 1 && sizeof shifted == sizeof plain, "keymap covers 0x00-0x39");
@@ -43,7 +44,7 @@ static char key_char(uint8_t key, uint8_t m) {
         if ((m & KMOD_CAPS) && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) c ^= 0x20;
     } else if (key >= KEY_KP7 && key <= KEY_KP_DOT) {
         c = keypad[key - KEY_KP7];
-        if (c != '-' && c != '+' && !(m & KMOD_NUM)) c = 0;
+        if (c != '-' && c != '+' && !(m & KMOD_NUM) == !shift) c = 0; // Shift flips Num Lock
     } else if (key == KEY_102ND) {
         c = shift ? '|' : '\\';
     } else if (key == KEY_KP_SLASH) {

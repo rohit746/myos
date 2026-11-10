@@ -31,8 +31,8 @@ timer_marker="timer self-test passed"
 kbd_marker="PS/2 keyboard ready"
 # Keys to type (QEMU sendkey names) and the lines the kernel must echo.
 keys=(shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
-      caps_lock m y shift-o s caps_lock kp_divide num_lock kp_4 kp_2 num_lock kp_7 kp_enter)
-typed=("Hello, World!" "MYoS/42")
+      caps_lock m y shift-o s caps_lock kp_divide num_lock kp_4 kp_2 shift-kp_7 num_lock kp_7 shift-kp_1 kp_enter)
+typed=("Hello, World!" "MYoS/421")
 crash_marker="CPU EXCEPTION 14: Page fault"
 halted_marker="System halted."
 fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PS/2)"
