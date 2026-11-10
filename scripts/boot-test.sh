@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Boot an ISO in QEMU without a display and check the kernel's serial output.
+#
+#   scripts/boot-test.sh <uefi|bios> <boot|crash> <iso> <logfile>
+#
+#   boot   pass when the kernel reports it's up; fail on any panic/exception
+#   crash  pass when the crash screen for the deliberate page fault appears
+#
+# UEFI mode needs the firmware path in $OVMF. Timeout: $BOOT_TIMEOUT (seconds).
+
+set -uo pipefail
+
+mode=${1:?mode: uefi|bios}
+expect=${2:?expect: boot|crash}
+iso=${3:?iso path}
+log=${4:?log path}
+timeout_s=${BOOT_TIMEOUT:-90}
+
+ok_marker="Kernel is up."
+crash_marker="CPU EXCEPTION 14: Page fault"
+halted_marker="System halted."
+fail_re="KERNEL PANIC|CPU EXCEPTION"
+
+[[ -f "$iso" ]] || { echo "boot-test: $iso not found"; exit 2; }
+mkdir -p "$(dirname "$log")"
+: > "$log"
+
+args=(-M q35 -m 512M -cpu max -vga std -display none -no-reboot
+      -serial "file:$log" -monitor none -cdrom "$iso")
+if [[ "$mode" == uefi ]]; then
+    [[ -n "${OVMF:-}" && -f "${OVMF}" ]] || { echo "boot-test: UEFI firmware not found (set OVMF)"; exit 2; }
+    args+=(-drive "if=pflash,unit=0,format=raw,readonly=on,file=$OVMF")
+fi
+
+qemu-system-x86_64 "${args[@]}" 2>"$log.qemu" &
+qemu=$!
+trap 'kill $qemu 2>/dev/null; wait $qemu 2>/dev/null' EXIT
+
+result=""
+start=$SECONDS
+while (( SECONDS - start < timeout_s )); do
+    if [[ "$expect" == boot ]]; then
+        if grep -Eq "$fail_re" "$log"; then result=fail; break; fi
+        if grep -Fq "$ok_marker" "$log"; then result=pass; break; fi
+    else
+        if grep -Fq "$halted_marker" "$log"; then
+            grep -Fq "$crash_marker" "$log" && result=pass || result=fail
+            break
+        fi
+    fi
+    # -no-reboot makes QEMU exit on a triple fault.
+    if ! kill -0 $qemu 2>/dev/null; then result=exited; break; fi
+    sleep 0.5
+done
+sleep 0.5 # let the last lines reach the log
+
+label="[$mode/$expect]"
+case "$result" in
+pass)
+    echo "PASS $label in $((SECONDS - start))s"
+    exit 0 ;;
+fail)    echo "FAIL $label unexpected kernel output:" ;;
+exited)  echo "FAIL $label QEMU exited early (triple fault / reset?):" ;;
+*)       echo "FAIL $label no result within ${timeout_s}s:" ;;
+esac
+# Strip the firmware's terminal escape codes so the log is readable.
+sed -e 's/\x1b\[[0-9;=]*[a-zA-Z]//g' "$log" | sed 's/^/    /'
+if [[ -s "$log.qemu" ]]; then echo "  QEMU stderr:"; sed 's/^/    /' "$log.qemu"; fi
+exit 1

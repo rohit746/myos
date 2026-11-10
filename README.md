@@ -14,13 +14,33 @@ make            # build/myos.iso
 make run        # boot in QEMU with UEFI; serial output goes to this terminal
 make run-bios   # boot in QEMU with legacy BIOS
 make debug      # QEMU waits for gdb: gdb build/kernel.elf -ex 'target remote :1234'
-make crash-test # boot a kernel that page-faults on purpose (checks the crash screen)
+make test       # headless boot test under UEFI and BIOS (what CI runs)
+make test-crash # headless check that the crash screen works
+make crash-test # boot a kernel that page-faults on purpose, in a window
 make compdb     # compile_commands.json for clangd/VS Code
 ```
 
+## CI and releases
+
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on
+every push to `main` and every pull request. It builds with `-Werror`, boots the
+ISO in QEMU under UEFI and BIOS, checks the crash screen, and uploads the ISO,
+kernel and boot logs as a build artifact.
+
+To publish a release, push a version tag:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+CI then creates a GitHub Release with `myos-v0.1.0.iso`, the kernel ELF (for
+`llvm-symbolizer`) and `SHA256SUMS`. The boot screen shows the version it was
+built from (`git describe`).
+
 ## Booting a real PC
 
-1. `make usb DEV=/dev/diskN`. Run `make usb` with no `DEV` first to list
+1. `make usb DEV=/dev/diskN` (or download an ISO from Releases and write it
+   with `scripts/write-usb.sh /dev/diskN myos-vX.Y.Z.iso`). Run `make usb` with no `DEV` first to list
    external disks; on macOS, `diskutil list` shows them too. **This erases
    the USB stick.**
 2. In the target PC's firmware settings, **disable Secure Boot**. Limine
@@ -50,6 +70,8 @@ kernel/src/isr.S        256 interrupt entry stubs
 kernel/src/console.c    text console drawn on the framebuffer
 kernel/src/serial.c     COM1 serial output (QEMU / debugging)
 kernel/src/kprintf.c    printf, snprintf, panic
+scripts/boot-test.sh    headless QEMU boot test used by `make test` and CI
+scripts/write-usb.sh    safely write the ISO to a USB stick
 vendor/limine           Limine 11.4.1 bootloader binaries (BSD-2-Clause)
 vendor/limine-protocol  limine.h boot protocol header (0BSD)
 vendor/font8x8          8x8 bitmap font (public domain)
