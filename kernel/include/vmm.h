@@ -42,6 +42,14 @@ void vmm_map(struct vmm_space *space, uint64_t virt, uint64_t phys, uint32_t fla
 // Page tables left empty are not freed yet.
 void vmm_unmap(struct vmm_space *space, uint64_t virt);
 
+// Map `size` bytes of device registers at physical `phys` (any alignment),
+// uncached and writable, and return their virtual address. The mapping lives
+// in its own window, [VMM_MMIO_BASE, VMM_MMIO_BASE + VMM_MMIO_SIZE), and is
+// never removed. Panics when the window is full.
+#define VMM_MMIO_BASE ((uint64_t)0xffffd00000000000)
+#define VMM_MMIO_SIZE ((uint64_t)1 << 30)
+volatile void *vmm_map_mmio(uint64_t phys, uint64_t size);
+
 // Translate `virt` (any byte, any page size). False if it isn't mapped.
 bool vmm_virt_to_phys(struct vmm_space *space, uint64_t virt, uint64_t *phys);
 

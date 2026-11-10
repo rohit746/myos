@@ -150,6 +150,20 @@ void vmm_unmap(struct vmm_space *s, uint64_t virt) {
     if (is_active(s)) invlpg(virt);
 }
 
+static uint64_t mmio_next = VMM_MMIO_BASE;
+
+volatile void *vmm_map_mmio(uint64_t phys, uint64_t size) {
+    uint64_t start = ALIGN_DOWN(phys, PAGE_SIZE);
+    uint64_t end = ALIGN_UP(phys + size, PAGE_SIZE);
+    if (size == 0 || end <= start || end - start > VMM_MMIO_BASE + VMM_MMIO_SIZE - mmio_next)
+        panic("vmm_map_mmio: no room to map %p (%lu bytes)", (void *)phys, size);
+    uint64_t virt = mmio_next;
+    for (uint64_t p = start; p < end; p += PAGE_SIZE)
+        vmm_map(&kernel_space, virt + (p - start), p, VMM_WRITE | VMM_UC);
+    mmio_next += end - start;
+    return (volatile void *)(virt + (phys - start));
+}
+
 bool vmm_virt_to_phys(struct vmm_space *s, uint64_t virt, uint64_t *phys) {
     uint64_t *table = phys_to_virt(s->pml4);
     for (int level = 4; level >= 1; level--) {

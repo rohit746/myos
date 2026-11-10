@@ -5,7 +5,8 @@
 #   make run-bios   boot the ISO in QEMU with legacy BIOS
 #   make debug      like `run`, but wait for gdb on :1234
 #   make usb DEV=/dev/diskN   write the ISO to a USB stick (asks first)
-#   make test       boot the ISO headless under UEFI and BIOS, check the output
+#   make test       boot the ISO headless under UEFI and BIOS (and once with an
+#                   xAPIC-only CPU), check the output
 #   make test-crash headless check that the crash screen works
 #   make crash-test  boot a kernel that page-faults on purpose (with a window)
 #   make compdb      write compile_commands.json for your editor
@@ -116,6 +117,7 @@ usb: $(ISO)
 test: $(ISO)
 	OVMF="$(OVMF)" scripts/boot-test.sh uefi boot $(ISO) $(BUILD)/test/uefi.log
 	scripts/boot-test.sh bios boot $(ISO) $(BUILD)/test/bios.log
+	QEMU_CPU=max,-x2apic OVMF="$(OVMF)" scripts/boot-test.sh uefi boot $(ISO) $(BUILD)/test/uefi-xapic.log
 
 # A kernel that deliberately page-faults, built separately in build/crash.
 CRASH_MAKE := $(MAKE) BUILD=$(BUILD)/crash EXTRA_CFLAGS="$(EXTRA_CFLAGS) -DMYOS_CRASH_TEST"
