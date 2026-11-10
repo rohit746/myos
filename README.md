@@ -72,10 +72,12 @@ kernel/src/vmm.c        the kernel's own page tables, vmm_map/vmm_unmap
 kernel/src/acpi.c       ACPI tables: CPUs, I/O APICs, IRQ overrides, FADT, HPET, MCFG
 kernel/src/apic.c       local APIC (x2APIC when available), I/O APIC, irq_register; 8259 PICs masked
 kernel/src/time.c       timer calibration (HPET / PM timer / PIT), 1000 Hz tick, monotonic clock, sleep_ms
+kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1, LEDs
+kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue
 kernel/src/console.c    text console drawn on the framebuffer
 kernel/src/serial.c     COM1 serial output (QEMU / debugging)
 kernel/src/kprintf.c    printf, snprintf, panic
-scripts/boot-test.sh    headless QEMU boot test used by `make test` and CI
+scripts/boot-test.sh    headless QEMU boot test used by `make test` and CI (also types keys through the QEMU monitor)
 scripts/write-usb.sh    safely write the ISO to a USB stick
 vendor/limine           Limine 11.4.1 bootloader binaries (BSD-2-Clause)
 vendor/limine-protocol  limine.h boot protocol header (0BSD)

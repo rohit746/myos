@@ -5,6 +5,7 @@
 #include <arch.h>
 #include <console.h>
 #include <cpu.h>
+#include <keyboard.h>
 #include <kheap.h>
 #include <kprintf.h>
 #include <limine.h>
@@ -184,6 +185,43 @@ static void print_date(int64_t unix_s) {
     kprintf("%04d-%02d-%02d %02d:%02d:%02d UTC", d.year, d.month, d.day, d.hour, d.minute, d.second);
 }
 
+// The idle loop's status line: uptime, date, and what has been typed on it.
+#define TYPED_MAX 48
+
+static char typed[TYPED_MAX + 1];
+static size_t typed_len;
+
+static void draw_status_line(bool keyboard) {
+    uint64_t s = clock_monotonic_ns() / NS_PER_SEC;
+    int64_t now;
+    kprintf("\r  uptime %lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
+    if (clock_realtime_ns(&now)) {
+        kprintf("   ");
+        print_date(now / (int64_t)NS_PER_SEC);
+    }
+    if (keyboard) kprintf("   > %s", typed);
+}
+
+// Echo a key onto the status line. Enter keeps the line and starts a new one.
+static void type_key(const struct key_event *ev) {
+    if (!ev->pressed) return;
+    if (ev->ch == '\n') {
+        draw_status_line(true);
+        kprintf("\n");
+        typed_len = 0;
+        typed[0] = '\0';
+        draw_status_line(true);
+    } else if (ev->ch == '\b') {
+        if (typed_len == 0) return;
+        typed[--typed_len] = '\0';
+        kprintf("\b \b");
+    } else if (ev->ch >= ' ' && ev->ch <= '~' && typed_len < TYPED_MAX) {
+        typed[typed_len++] = ev->ch;
+        typed[typed_len] = '\0';
+        kprintf("%c", ev->ch);
+    }
+}
+
 static void print_cpu(void) {
     uint32_t a, b, c, d;
     char vendor[13];
@@ -357,6 +395,12 @@ void kmain(void) {
         kprintf("  wall clock: unknown, the bootloader gave no date\n");
     }
 
+    enum ps2_status ps2 = ps2_init(line, sizeof line);
+    if (ps2 == PS2_READY) ok(line);
+    else if (ps2 == PS2_FAILED) warn_line(line);
+    else kprintf("  %s\n", line);
+    bool keyboard = ps2 == PS2_READY;
+
 #ifdef MYOS_CRASH_TEST
     // `make crash-test`: touch an unmapped address to exercise the
     // page-fault handler and the crash screen.
@@ -368,21 +412,23 @@ void kmain(void) {
 
     kprintf("\n");
     console_set_color(COLOR_YELLOW, COLOR_BG);
-    kprintf("  Kernel is up. Nothing else to do yet, so this CPU is going to sleep.\n\n");
+    if (keyboard)
+        kprintf("  Kernel is up. Type something; Enter starts a new line.\n\n");
+    else
+        kprintf("  Kernel is up. No keyboard, so this CPU is going to sleep.\n\n");
     console_set_color(COLOR_WHITE, COLOR_BG);
 
     // Sleep with interrupts on, so IRQs still get handled. The tick wakes
-    // the CPU every millisecond; once a second, redraw the uptime line.
+    // the CPU every millisecond; echo any keys, and once a second redraw
+    // the status line.
     uint64_t shown = UINT64_MAX;
     for (;;) {
+        struct key_event ev;
+        while (keyboard_read(&ev)) type_key(&ev);
         uint64_t s = clock_monotonic_ns() / NS_PER_SEC;
         if (s != shown) {
             shown = s;
-            kprintf("\r  uptime %lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
-            if (clock_realtime_ns(&now)) {
-                kprintf("   ");
-                print_date(now / (int64_t)NS_PER_SEC);
-            }
+            draw_status_line(keyboard);
         }
         hlt();
     }
