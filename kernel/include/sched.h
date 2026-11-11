@@ -7,6 +7,9 @@
 // had in registers was already saved by the C code that called the switch,
 // or by the interrupt entry stub when the timer tick preempted it.
 //
+// A thread that runs a user process has that process's page tables
+// (thread.cr3); a switch loads them, or the kernel's for a kernel thread.
+//
 // Ready threads wait in one FIFO run queue. Each runs for up to
 // SCHED_QUANTUM_MS of timer ticks before the tick puts it at the back of the
 // queue, whether it yields or not. When nothing is ready the idle thread
@@ -35,6 +38,7 @@
 #define THREAD_LOCKS_MAX   8  // locks one thread may hold at once (sync.h)
 
 struct lock_dep;
+struct process;
 
 enum thread_state {
     THREAD_RUNNING, // on the CPU now
@@ -59,6 +63,8 @@ struct thread {
     unsigned spins_held;     // spinlocks held: it must not sleep
     unsigned locks_held;     // entries in `held`
     const struct lock_dep *held[THREAD_LOCKS_MAX]; // spinlocks and mutexes, oldest first (sync.c)
+    uint64_t cr3;            // its page tables: kernel_space's, or its process's
+    struct process *proc;    // the user process it runs, or NULL (proc.h)
 };
 
 // Turn the code that is running (kmain, on Limine's stack) into the thread

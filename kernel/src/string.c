@@ -55,6 +55,7 @@ const char *strerror(int err) {
     case EIO: return "Input/output error";
     case EBADF: return "Bad file descriptor";
     case ENOMEM: return "Out of memory";
+    case EFAULT: return "Bad address";
     case EBUSY: return "Device or resource busy";
     case EEXIST: return "File exists";
     case ENOTDIR: return "Not a directory";
@@ -65,6 +66,7 @@ const char *strerror(int err) {
     case ENOSPC: return "No space left on device";
     case EROFS: return "Read-only file system";
     case ENAMETOOLONG: return "File name too long";
+    case ENOSYS: return "Function not implemented";
     default: return "Unknown error";
     }
 }

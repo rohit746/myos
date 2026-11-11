@@ -35,6 +35,22 @@ extern struct vmm_space kernel_space;
 // physical memory manager. Limine's page tables are unused afterwards.
 void vmm_init(struct limine_memmap_response *memmap, uint64_t kernel_phys, uint64_t kernel_virt);
 
+// Address spaces for user processes. Each has its own lower half (PML4
+// entries 0-255) and shares the kernel half (256-511) with kernel_space:
+// vmm_init() fills every kernel-half PML4 entry, so the tables below them
+// are the same in every space, and kernel mappings made later show up in
+// all of them.
+//
+// vmm_space_create: an empty lower half. False if there is no memory.
+// vmm_space_destroy: free the lower half's tables and every page mapped
+// there (the pages belong to the space). It must not be the active space.
+bool vmm_space_create(struct vmm_space *space);
+void vmm_space_destroy(struct vmm_space *space);
+
+// Whether user mode may read (and with `write`, write) the page holding
+// `virt` in `space`: every level present and user-accessible.
+bool vmm_user_accessible(struct vmm_space *space, uint64_t virt, bool write);
+
 // Map one 4 KiB page. Panics if `virt` is already mapped.
 void vmm_map(struct vmm_space *space, uint64_t virt, uint64_t phys, uint32_t flags);
 

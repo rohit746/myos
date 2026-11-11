@@ -12,6 +12,7 @@
 #include <limine.h>
 #include <memory.h>
 #include <pmm.h>
+#include <proc.h>
 #include <sched.h>
 #include <serial.h>
 #include <shell.h>
@@ -19,6 +20,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sync.h>
+#include <syscall.h>
 #include <time.h>
 #include <vfs.h>
 #include <vmm.h>
@@ -365,6 +367,12 @@ void kmain(void) {
     if (initramfs == NULL) warn_line("initramfs: no module called \"initramfs\" (limine.conf); / is empty");
     else if (initramfs_unpack(initramfs->address, initramfs->size, line, sizeof line)) ok(line);
     else warn_line(line);
+
+    syscall_init(line, sizeof line);
+    ok(line);
+
+    process_self_test(line, sizeof line);
+    ok(line);
 
     if (have_screen) {
         struct console_info con = console_get_info();

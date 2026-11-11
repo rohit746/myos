@@ -5,6 +5,15 @@
 // Each stub makes the stack look the same (a dummy error code is pushed
 // when the CPU doesn't push one), pushes its vector number, and jumps to
 // isr_common, which saves registers and calls isr_dispatch() in C.
+//
+// From user mode, isr_common also swaps the GS base to the kernel's
+// (struct cpu_local in arch.h) on the way in, and back on the way out.
+
+#include <arch.h>
+
+// Where the CPU put the interrupted code's CS, while the stack holds the
+// vector and error code on top of the CPU's frame (rip, cs, ...).
+#define FRAME_CS 24
 
 .section .text
 
@@ -25,7 +34,18 @@ isr_stubs:
 .endr
 
 isr_common:
+    testb $3, FRAME_CS(%rsp) // from user mode?
+    jz 1f
+    swapgs
+1:
     cld
+    // User code may set RFLAGS.AC, and so may copy_from_user/copy_to_user:
+    // with AC set, SMAP lets the kernel touch user memory. Not in here. The
+    // interrupted code gets its own AC back from iretq.
+    cmpb $0, smap_enabled(%rip)
+    je 2f
+    clac
+2:
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -61,5 +81,9 @@ isr_common:
     popq %rcx
     popq %rbx
     popq %rax
+    testb $3, FRAME_CS(%rsp) // back to user mode?
+    jz 3f
+    swapgs
+3:
     addq $16, %rsp // drop vector + error code
     iretq

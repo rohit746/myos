@@ -59,9 +59,17 @@ static inline uint64_t read_cr4(void) { uint64_t v; __asm__ volatile("mov %%cr4,
 
 static inline void write_cr0(uint64_t v) { __asm__ volatile("mov %0, %%cr0" : : "r"(v) : "memory"); }
 static inline void write_cr3(uint64_t v) { __asm__ volatile("mov %0, %%cr3" : : "r"(v) : "memory"); }
+static inline void write_cr4(uint64_t v) { __asm__ volatile("mov %0, %%cr4" : : "r"(v) : "memory"); }
 
 // Drop the TLB entry for one virtual address on this CPU.
 static inline void invlpg(uint64_t virt) { __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory"); }
+
+#define MSR_EFER           0xc0000080
+#define MSR_STAR           0xc0000081
+#define MSR_LSTAR          0xc0000082
+#define MSR_FMASK          0xc0000084
+#define MSR_GS_BASE        0xc0000101
+#define MSR_KERNEL_GS_BASE 0xc0000102
 
 static inline uint64_t rdmsr(uint32_t msr) {
     uint32_t lo, hi;

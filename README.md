@@ -82,6 +82,10 @@ kernel/src/sync.c       spinlocks, wait queues, mutexes, semaphores, condition v
 kernel/src/vfs.c        VFS: vnodes with an operations table, path lookup, mounts, open/read/write/readdir/stat/mkdir
 kernel/src/tmpfs.c      tmpfs: files and directories in RAM (the root filesystem)
 kernel/src/devfs.c      devfs on /dev: console, null, zero
+kernel/src/proc.c       user processes: own address spaces, ring 3, copy_from_user/copy_to_user, killed on a fault
+kernel/src/syscall.c    syscall/sysret setup, SMEP/SMAP, the system calls (write, mmap, nanosleep, getpid, exit, clock_gettime)
+kernel/src/syscall.S    syscall entry (swapgs, kernel stack) and the first iretq to ring 3
+kernel/src/user_programs.S  built-in ring-3 test programs (`user hello`, `user kread`, ...)
 kernel/src/initramfs.c  unpacks the initramfs (a USTAR archive Limine loads as a module) into /
 kernel/src/cpu.c        CPU identification (CPUID)
 kernel/src/console.c    framebuffer text console: 8x16 font, ANSI escape codes, RAM shadow buffer
