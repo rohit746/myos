@@ -155,6 +155,8 @@ static int do_open(const char *path, int flags) {
     struct vnode *v;
     int err = resolve(path, &v);
     if (err == -ENOENT && (flags & O_CREAT)) {
+        size_t len = strlen(path);
+        if (len > 0 && path[len - 1] == '/') return -EISDIR; // only directories end in "/"
         struct vnode *dir;
         char name[VFS_NAME_MAX + 1];
         err = resolve_parent(path, &dir, name);
@@ -371,6 +373,7 @@ void vfs_self_test(char *line, size_t size) {
 
     check(vfs_open("/a/b/f/", O_RDONLY), -ENOTDIR, "open a file with a trailing slash");
     check(vfs_open("/a/b/f/g", O_RDWR | O_CREAT), -ENOTDIR, "create under a file");
+    check(vfs_open("/a/new/", O_RDWR | O_CREAT), -EISDIR, "create a file with a trailing slash");
     check(vfs_open("/a/nope", O_RDONLY), -ENOENT, "open a missing file");
     check(vfs_open("/a", O_WRONLY), -EISDIR, "open a directory for writing");
     check(vfs_open("/a", O_ACCMODE), -EINVAL, "open with a bad mode");
