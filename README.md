@@ -14,8 +14,8 @@ make            # build/myos.iso
 make run        # boot in QEMU with UEFI; serial output goes to this terminal
 make run-bios   # boot in QEMU with legacy BIOS
 make debug      # QEMU waits for gdb: gdb build/kernel.elf -ex 'target remote :1234'
-make test       # headless boot test under UEFI and BIOS (what CI runs)
-make test-crash # headless check that the crash screen works
+make test       # headless boot test under UEFI and BIOS, driving the shell (what CI runs)
+make test-crash # headless check that the crash screen and `panic` work
 make crash-test # boot a kernel that page-faults on purpose, in a window
 make compdb     # compile_commands.json for clangd/VS Code
 ```
@@ -47,7 +47,8 @@ built from (`git describe`).
    isn't signed with Microsoft's keys.
 3. Power on and open the one-time boot menu (usually F12, F11, F8 or Esc).
    Pick the USB drive (the "UEFI:" entry if both are listed).
-4. Limine's menu appears for 3 seconds, then the kernel prints its boot log.
+4. Limine's menu appears for 3 seconds, then the kernel prints its boot log
+   and a `myos>` prompt. `help` lists the shell's commands.
 
 Most PCs have no serial port, so on real hardware everything shows on the
 screen. If the machine crashes you get a red crash screen with the
@@ -74,6 +75,8 @@ kernel/src/apic.c       local APIC (x2APIC when available), I/O APIC, irq_regist
 kernel/src/time.c       timer calibration (HPET / PM timer / PIT), 1000 Hz tick, monotonic clock, sleep_ms
 kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1, LEDs
 kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue
+kernel/src/shell.c      kernel shell: line editor, history, command table, built-in commands
+kernel/src/cpu.c        CPU identification (CPUID)
 kernel/src/console.c    framebuffer text console: 8x16 font, ANSI escape codes, RAM shadow buffer
 kernel/src/font.S      embeds the console font (a PSF2 file)
 kernel/src/serial.c     COM1 serial output (QEMU / debugging)

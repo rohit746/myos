@@ -74,3 +74,12 @@ __attribute__((noreturn)) static inline void halt_forever(void) {
         hlt();
     }
 }
+
+// What CPUID says this CPU is.
+struct cpu_ident {
+    char vendor[13]; // "GenuineIntel", "AuthenticAMD", ...
+    char brand[49];  // "Intel(R) Core(TM) i5-8250U CPU @ 1.60GHz", or "unknown"
+    unsigned family, model, stepping; // with the extended family and model added in
+};
+
+void cpu_identify(struct cpu_ident *id);

@@ -6,8 +6,9 @@
 #   make debug      like `run`, but wait for gdb on :1234
 #   make usb DEV=/dev/diskN   write the ISO to a USB stick (asks first)
 #   make test       boot the ISO headless under UEFI and BIOS (and once with an
-#                   xAPIC-only CPU), check the output
-#   make test-crash headless check that the crash screen works
+#                   xAPIC-only CPU), check the output and drive the shell
+#   make test-crash headless check that the crash screen works (a kernel
+#                   that faults on purpose, and the shell's panic command)
 #   make crash-test  boot a kernel that page-faults on purpose (with a window)
 #   make compdb      write compile_commands.json for your editor
 #   make clean
@@ -125,9 +126,11 @@ test: $(ISO)
 # A kernel that deliberately page-faults, built separately in build/crash.
 CRASH_MAKE := $(MAKE) BUILD=$(BUILD)/crash EXTRA_CFLAGS="$(EXTRA_CFLAGS) -DMYOS_CRASH_TEST"
 
-test-crash:
+test-crash: $(ISO)
 	$(CRASH_MAKE) $(BUILD)/crash/myos.iso
 	OVMF="$(OVMF)" scripts/boot-test.sh uefi crash $(BUILD)/crash/myos.iso $(BUILD)/test/crash.log
+	OVMF="$(OVMF)" scripts/boot-test.sh uefi panic $(ISO) $(BUILD)/test/panic.log
+	OVMF="$(OVMF)" scripts/boot-test.sh uefi fault $(ISO) $(BUILD)/test/fault.log
 
 crash-test:
 	$(CRASH_MAKE) run
