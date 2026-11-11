@@ -379,6 +379,19 @@ static void cmd_reboot(int argc, char **argv) {
     halt_forever();
 }
 
+SHELL_COMMAND(poweroff, "", "turn the machine off");
+static void cmd_poweroff(int argc, char **argv) {
+    if (!acpi_get_info()->can_power_off) {
+        kprintf("poweroff: the ACPI tables don't say how (`acpi` shows why); turn it off by hand\n");
+        return;
+    }
+    kprintf("Powering off...\n");
+    cli();
+    acpi_power_off();
+    sti();
+    kprintf("poweroff: the machine is still on; turn it off by hand\n");
+}
+
 SHELL_COMMAND(panic, "[fault]", "crash on purpose: a kernel panic, or a page fault for the crash screen");
 static void cmd_panic(int argc, char **argv) {
     if (argc == 1) panic("panic command");

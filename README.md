@@ -14,7 +14,7 @@ make            # build/myos.iso
 make run        # boot in QEMU with UEFI; serial output goes to this terminal
 make run-bios   # boot in QEMU with legacy BIOS
 make debug      # QEMU waits for gdb: gdb build/kernel.elf -ex 'target remote :1234'
-make test       # headless boot test under UEFI and BIOS, driving the shell (what CI runs)
+make test       # headless boot test under UEFI and BIOS, driving the shell, then reboot and poweroff (what CI runs)
 make test-crash # headless check that the crash screen and `panic` work
 make crash-test # boot a kernel that page-faults on purpose, in a window
 make compdb     # compile_commands.json for clangd/VS Code
@@ -70,7 +70,7 @@ kernel/src/idt.c        interrupt table, exception handling, crash screen
 kernel/src/isr.S        256 interrupt entry stubs
 kernel/src/pmm.c        physical page allocator (bitmap)
 kernel/src/vmm.c        the kernel's own page tables, vmm_map/vmm_unmap
-kernel/src/acpi.c       ACPI tables: CPUs, I/O APICs, IRQ overrides, FADT, HPET, MCFG
+kernel/src/acpi.c       ACPI tables: CPUs, I/O APICs, IRQ overrides, FADT, HPET, MCFG; \_S5 power off
 kernel/src/apic.c       local APIC (x2APIC when available), I/O APIC, irq_register; 8259 PICs masked
 kernel/src/time.c       timer calibration (HPET / PM timer / PIT), 1000 Hz tick, monotonic clock, sleep_ms
 kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1, LEDs
