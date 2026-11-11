@@ -5,7 +5,8 @@
 #
 #   boot   pass when the kernel reports it's up, ACPI found all the CPUs QEMU
 #          was given, a PIT IRQ came in through the I/O APIC, the timer
-#          tick ran at the calibrated rate and the PS/2 keyboard is ready,
+#          tick ran at the calibrated rate, the scheduler preempted threads
+#          that never yield, and the PS/2 keyboard is ready,
 #          a screendump shows the green "[ ok ]" text the escape codes ask
 #          for, and then, typing through QEMU's monitor, the shell works:
 #          lines edited with Shift, Caps Lock, Num Lock, Backspace, Delete,
@@ -37,6 +38,7 @@ smp=4 # CPUs QEMU gets; the ACPI summary must list them all
 cpus_marker="cpus:   $smp,"
 irq_marker="IRQ self-test passed"
 timer_marker="timer self-test passed"
+sched_marker="scheduler self-test passed"
 kbd_marker="PS/2 keyboard ready"
 # Keys to type: QEMU sendkey names, or "=text" for the keys that type text.
 # Each line runs `echo`, so what it prints is what the editing produced.
@@ -50,12 +52,14 @@ keys=("=echo " shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
 # Lines the shell must print, each "count:text".
 typed=("2:Hello, World!" "1:MYoS/421" "2:right!" "1:left ok")
 # Commands to run, and a line (extended regex) each must print.
-commands=(help uptime mem cpu acpi nope)
+commands=(help uptime mem cpu acpi ps threads nope)
 outputs=("^  reboot +restart the machine"
          "^up [0-9]+:[0-9]{2}:[0-9]{2} \([0-9]+\.[0-9]{3} s, [0-9]+ ticks at 1000 Hz\)"
          "^physical: [0-9]+ MiB managed"
          "^cpus: +$smp in the MADT"
          "^ACPI .*: [0-9]+ tables via the"
+         "^ +[0-9]+ +running +[0-9]+ +[0-9]+ +main"
+         "^threads: 4 threads ran and exited"
          "^nope: unknown command")
 reboot_marker="Rebooting..."
 poweroff_marker="Powering off..."
@@ -229,6 +233,7 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$cpus_marker" "$log"; then result=cpus
             elif ! grep -Fq "$irq_marker" "$log"; then result=irq
             elif ! grep -Fq "$timer_marker" "$log"; then result=timer
+            elif ! grep -Fq "$sched_marker" "$log"; then result=sched
             elif ! grep -Fq "$kbd_marker" "$log"; then result=kbd
             else result=pass
             fi
@@ -278,6 +283,7 @@ fail)    echo "FAIL $label unexpected kernel output:" ;;
 cpus)    echo "FAIL $label ACPI did not report $smp CPUs (\"$cpus_marker\"):" ;;
 irq)     echo "FAIL $label no device IRQ through the I/O APIC (\"$irq_marker\"):" ;;
 timer)   echo "FAIL $label the timer tick did not pass its self-test (\"$timer_marker\"):" ;;
+sched)   echo "FAIL $label the scheduler did not pass its self-test (\"$sched_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
 screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
 typing)  echo "FAIL $label the shell did not print these lines (count:text): ${typed[*]}" ;;

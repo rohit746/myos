@@ -2,6 +2,7 @@
 #include <cpu.h>
 #include <klog.h>
 #include <kprintf.h>
+#include <sched.h>
 #include <serial.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -121,9 +122,13 @@ static void format(struct sink *s, const char *fmt, va_list ap) {
 }
 
 void kvprintf(const char *fmt, va_list ap) {
+    // One call's output stays together, and the console's state (cursor,
+    // escape-code parser) is never changed by two threads at once.
+    preempt_disable();
     struct sink s = {.put = put_out};
     format(&s, fmt, ap);
     console_flush();
+    preempt_enable();
 }
 
 void kprintf(const char *fmt, ...) {

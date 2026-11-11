@@ -27,6 +27,6 @@ struct shell_command {
     __attribute__((used, section(".shell_commands"), aligned(8))) static const struct shell_command            \
         shell_command_##name = {#name, usage, help, cmd_##name}
 
-// Show the prompt and run commands forever. Needs the keyboard (ps2_init)
-// and interrupts on; between keys the CPU sleeps until the next interrupt.
+// Show the prompt and run commands forever. Needs the keyboard (ps2_init),
+// the scheduler and interrupts on; between keys the shell's thread sleeps.
 __attribute__((noreturn)) void shell_run(void);

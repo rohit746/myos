@@ -29,6 +29,9 @@ static struct tss tss;
 static uint8_t kernel_int_stack[16384] __attribute__((aligned(16)));
 static uint8_t double_fault_stack[16384] __attribute__((aligned(16)));
 
+void tss_set_rsp0(uint64_t rsp0) { tss.rsp[0] = rsp0; }
+uint64_t tss_get_rsp0(void) { return tss.rsp[0]; }
+
 void gdt_init(void) {
     gdt[0] = 0;                  // null descriptor (required)
     gdt[1] = 0x00af9a000000ffff; // 0x08 kernel code: present, ring 0, executable, 64-bit

@@ -19,6 +19,7 @@
 #include <kprintf.h>
 #include <memory.h>
 #include <pmm.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <string.h>
 #include <vmm.h>
@@ -247,7 +248,7 @@ static void release(struct block *b) {
     trim();
 }
 
-static void *alloc(size_t size, uint64_t align) {
+static void *alloc_locked(size_t size, uint64_t align) {
     if (!ready) panic("kmalloc before kheap_init");
     if (size == 0 || size > KHEAP_MAX_SIZE) return NULL;
     uint64_t need = block_size_for(size);
@@ -323,6 +324,14 @@ void kheap_init(void) {
     ready = true;
 }
 
+// Every entry point runs with preemption off, so threads can share the heap.
+static void *alloc(size_t size, uint64_t align) {
+    preempt_disable();
+    void *p = alloc_locked(size, align);
+    preempt_enable();
+    return p;
+}
+
 void *kmalloc(size_t size) { return alloc(size, ALIGN); }
 
 void *kmalloc_aligned(size_t size, size_t align) {
@@ -340,14 +349,25 @@ void *kcalloc(size_t count, size_t size) {
 
 void kfree(void *ptr) {
     if (ptr == NULL) return;
+    preempt_disable();
     struct block *b = checked_block("kfree", ptr);
     stats.used_bytes -= b->requested;
     stats.allocations--;
     stats.total_frees++;
     release(b);
+    preempt_enable();
 }
 
+static void *realloc_locked(void *ptr, size_t size);
+
 void *krealloc(void *ptr, size_t size) {
+    preempt_disable();
+    void *p = realloc_locked(ptr, size);
+    preempt_enable();
+    return p;
+}
+
+static void *realloc_locked(void *ptr, size_t size) {
     if (ptr == NULL) return kmalloc(size);
     if (size == 0) {
         kfree(ptr);
@@ -379,14 +399,24 @@ void *krealloc(void *ptr, size_t size) {
 }
 
 struct kheap_stats kheap_get_stats(void) {
+    preempt_disable();
     struct kheap_stats s = stats;
     s.largest_free = 0;
     for (struct block *b = free_head; b; b = links(b)->next)
         if (b->size > s.largest_free) s.largest_free = b->size;
+    preempt_enable();
     return s;
 }
 
+static void check_locked(void);
+
 void kheap_check(void) {
+    preempt_disable();
+    check_locked();
+    preempt_enable();
+}
+
+static void check_locked(void) {
     uint64_t used = 0, live = 0, free_bytes = 0, free_count = 0, prev_size = 0;
     bool prev_free = false;
     struct block *last = NULL;

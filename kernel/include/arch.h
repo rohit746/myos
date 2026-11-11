@@ -27,5 +27,11 @@ typedef void (*interrupt_handler_t)(struct interrupt_frame *frame);
 void gdt_init(void);
 void idt_init(void);
 
+// The stack the CPU switches to when an interrupt or system call comes from
+// user mode (TSS.rsp0). The scheduler points it at the running thread's
+// kernel stack.
+void tss_set_rsp0(uint64_t rsp0);
+uint64_t tss_get_rsp0(void);
+
 // Install a handler for vector 32..255 (hardware IRQs, syscalls, ...).
 void idt_set_handler(uint8_t vector, interrupt_handler_t handler);
