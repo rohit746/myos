@@ -11,6 +11,7 @@
 #include <limine.h>
 #include <memory.h>
 #include <pmm.h>
+#include <sched.h>
 #include <serial.h>
 #include <shell.h>
 #include <stddef.h>
@@ -328,6 +329,14 @@ void kmain(void) {
     timer_self_test(line, sizeof line);
     if (line[0]) ok(line);
 
+    sched_init();
+    ksnprintf(line, sizeof line, "scheduler started: round robin, %d ms slices from the timer tick, %u KiB stacks",
+              SCHED_QUANTUM_MS, THREAD_STACK_SIZE / 1024);
+    ok(line);
+
+    sched_self_test(line, sizeof line);
+    ok(line);
+
     if (have_screen) {
         struct console_info con = console_get_info();
         uint64_t t0 = clock_monotonic_ns();
@@ -369,6 +378,6 @@ void kmain(void) {
         shell_run();
     }
     kprintf(ANSI_YELLOW "  Kernel is up. No keyboard, so this CPU is going to sleep." ANSI_RESET "\n\n");
-    // Sleep with interrupts on, so IRQs still get handled.
-    for (;;) hlt();
+    // The idle thread sleeps with interrupts on, so IRQs still get handled.
+    thread_exit();
 }

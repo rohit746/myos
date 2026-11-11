@@ -17,6 +17,7 @@
 #include <arch.h>
 #include <cpu.h>
 #include <kprintf.h>
+#include <sched.h>
 #include <stddef.h>
 #include <time.h>
 #include <vmm.h>
@@ -182,7 +183,10 @@ static bool calibrate(const struct refclock *ref) {
 static void tick_handler(struct interrupt_frame *f) {
     (void)f;
     ticks++;
+    // Before sched_tick: it may switch to another thread, which then runs
+    // for a while before this handler returns.
     lapic_eoi();
+    sched_tick();
 }
 
 static uint64_t source_read(void) {

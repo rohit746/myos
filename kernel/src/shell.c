@@ -15,6 +15,7 @@
 #include <kprintf.h>
 #include <memory.h>
 #include <pmm.h>
+#include <sched.h>
 #include <shell.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -208,7 +209,7 @@ void shell_run(void) {
     for (;;) {
         struct key_event ev;
         while (keyboard_read(&ev)) key(&ev);
-        hlt(); // the tick wakes us within a millisecond
+        thread_sleep(1); // other threads run meanwhile; a key waits a tick or two
     }
 }
 

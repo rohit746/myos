@@ -76,6 +76,8 @@ kernel/src/time.c       timer calibration (HPET / PM timer / PIT), 1000 Hz tick,
 kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1, LEDs
 kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue
 kernel/src/shell.c      kernel shell: line editor, history, command table, built-in commands
+kernel/src/sched.c      kernel threads, round-robin preemptive scheduler, sleep, idle thread
+kernel/src/switch.S     switch_context: swaps kernel stacks between threads
 kernel/src/cpu.c        CPU identification (CPUID)
 kernel/src/console.c    framebuffer text console: 8x16 font, ANSI escape codes, RAM shadow buffer
 kernel/src/font.S      embeds the console font (a PSF2 file)

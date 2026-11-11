@@ -14,7 +14,8 @@
 //   - kfree panics on a double free, a pointer the heap never handed out, or
 //     a block header that has been overwritten
 //
-// Not safe to call from interrupt handlers or several CPUs yet.
+// Threads can share it: every call runs with preemption disabled. Not safe
+// to call from interrupt handlers or several CPUs yet.
 
 #include <stddef.h>
 #include <stdint.h>
