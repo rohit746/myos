@@ -55,7 +55,22 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 SRCS := $(shell find kernel/src -name '*.c' -o -name '*.S')
 OBJS := $(SRCS:%=$(BUILD)/obj/%.o)
 
-QEMU_COMMON := qemu-system-x86_64 -M q35 -m 512M -cpu max -smp 4 \
+# Screen size for `run`, `run-bios` and `debug`: QEMU's display advertises it
+# as the preferred mode (EDID), and the firmware and Limine pick it. On macOS,
+# QEMU's window shows one guest pixel per physical pixel, so on a Retina
+# display 1280x800 comes out half size; 2560x1600 makes a 1280x800-point
+# window, and the console draws its text at scale 2. Override with
+# `make run RES=1280x800` (for example on a non-Retina screen).
+ifeq ($(shell uname -s),Darwin)
+RES ?= 2560x1600
+else
+RES ?= 1280x800
+endif
+RES_X = $(word 1,$(subst x, ,$(RES)))
+RES_Y = $(word 2,$(subst x, ,$(RES)))
+
+QEMU_COMMON = qemu-system-x86_64 -M q35 -m 512M -cpu max -smp 4 \
+	-vga none -device VGA,xres=$(RES_X),yres=$(RES_Y),vgamem_mb=32 \
 	-serial stdio -no-reboot -no-shutdown
 
 .PHONY: all kernel run run-bios debug usb test test-crash crash-test compdb clean FORCE
