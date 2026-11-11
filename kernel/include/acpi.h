@@ -2,8 +2,12 @@
 // ACPI table discovery: find the firmware's tables and read the static ones
 // that describe the machine (MADT, FADT, HPET, MCFG).
 //
-// Only tables are parsed. Anything that needs AML (the DSDT and SSDTs:
-// power button, sleep, shutdown) is left for an AML interpreter.
+// Only tables are parsed, with one exception: the \_S5 object in the DSDT
+// (or an SSDT), which says how to power the machine off. It is found by a
+// byte search of the AML, not by an interpreter, so it is only understood
+// when it is a plain Name with a Package of integer constants, as it is on
+// nearly every PC. Anything else that needs AML (power button, sleep states,
+// _PTS) is left for an AML interpreter.
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -124,6 +128,14 @@ struct acpi_info {
     bool msi_unsupported;
     bool cmos_rtc_absent;
 
+    // Soft-off (S5): write SLP_TYPa/b with SLP_EN to the PM1a/b control
+    // registers. Only with I/O-port PM1 blocks, which every PC has.
+    bool can_power_off;       // \_S5 found and there is a PM1a control register
+    uint8_t s5_slp_typa, s5_slp_typb;
+    uint16_t pm1a_cnt, pm1b_cnt; // I/O ports; pm1b_cnt is 0 when there is none
+    uint16_t smi_cmd;         // writing `acpi_enable_value` here switches to ACPI mode (0: always in it)
+    uint8_t acpi_enable_value;
+
     // HPET
     bool have_hpet;
     uint64_t hpet_address;
@@ -149,6 +161,10 @@ const struct acpi_sdt_header *acpi_find_table(const char *signature);
 
 // Like acpi_find_table, for the n-th table (from 0) with that signature.
 const struct acpi_sdt_header *acpi_find_table_nth(const char *signature, size_t n);
+
+// Turn the machine off (ACPI S5). Interrupts must be off. Returns only if
+// it did not work, or acpi_get_info()->can_power_off is false.
+void acpi_power_off(void);
 
 // Print the boot summary: tables, CPUs, I/O APICs, overrides, FADT details.
 void acpi_print_summary(void);

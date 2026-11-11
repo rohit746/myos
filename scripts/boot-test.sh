@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot an ISO in QEMU without a display and check the kernel's serial output.
 #
-#   scripts/boot-test.sh <uefi|bios> <boot|crash|panic|fault> <iso> <logfile>
+#   scripts/boot-test.sh <uefi|bios> <boot|power|crash|panic|fault> <iso> <logfile>
 #
 #   boot   pass when the kernel reports it's up, ACPI found all the CPUs QEMU
 #          was given, a PIT IRQ came in through the I/O APIC, the timer
@@ -13,6 +13,10 @@
 #          every command prints what it should, `clear` blanks the screen
 #          and `reboot` resets the machine (QEMU exits: -no-reboot); fail on
 #          any panic, exception or unhandled interrupt
+#   power  pass when `reboot` restarts the machine (the kernel boots a second
+#          time) and `poweroff` then turns it off through ACPI: QEMU exits on
+#          its own, with status 0. QEMU runs without -no-reboot here, so a
+#          reset or triple fault reboots instead of passing for a power-off
 #   crash  pass when the crash screen for the deliberate page fault appears
 #   panic  pass when the shell's `panic` command panics the kernel
 #   fault  pass when the shell's `panic fault` brings up the crash screen
@@ -23,7 +27,7 @@
 set -uo pipefail
 
 mode=${1:?mode: uefi|bios}
-expect=${2:?expect: boot|crash|panic|fault}
+expect=${2:?expect: boot|power|crash|panic|fault}
 iso=${3:?iso path}
 log=${4:?log path}
 timeout_s=${BOOT_TIMEOUT:-90}
@@ -54,6 +58,7 @@ outputs=("^  reboot +restart the machine"
          "^ACPI .*: [0-9]+ tables via the"
          "^nope: unknown command")
 reboot_marker="Rebooting..."
+poweroff_marker="Powering off..."
 crash_marker="CPU EXCEPTION 14: Page fault"
 panic_marker="KERNEL PANIC *** panic command"
 halted_marker="System halted."
@@ -65,8 +70,9 @@ mkdir -p "$(dirname "$log")"
 
 monitor="$log.mon"
 rm -f "$monitor" "$log.screen"
-args=(-M q35 -m 512M -cpu "${QEMU_CPU:-max}" -smp "$smp" -vga std -display none -no-reboot
+args=(-M q35 -m 512M -cpu "${QEMU_CPU:-max}" -smp "$smp" -vga std -display none
       -serial "file:$log" -monitor "unix:$monitor,server=on,wait=off" -cdrom "$iso")
+[[ "$expect" == power ]] || args+=(-no-reboot)
 if [[ "$mode" == uefi ]]; then
     [[ -n "${OVMF:-}" && -f "${OVMF}" ]] || { echo "boot-test: UEFI firmware not found (set OVMF)"; exit 2; }
     args+=(-drive "if=pflash,unit=0,format=raw,readonly=on,file=$OVMF")
@@ -183,6 +189,29 @@ check_commands() {
     return 1
 }
 
+# Wait up to 60 s for the kernel to have booted $1 times.
+wait_for_boots() {
+    local j
+    for (( j = 0; j < 120; j++ )); do
+        (( $(grep -Fc "$ok_marker" "$log") >= $1 )) && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
+# Wait up to 20 s for QEMU to exit on its own, with status 0.
+wait_for_exit() {
+    local j
+    for (( j = 0; j < 40; j++ )); do
+        if ! kill -0 $qemu 2>/dev/null; then
+            wait $qemu
+            return
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
 # Wait up to 20 s for a fixed string in the log.
 wait_for() {
     local j
@@ -211,7 +240,7 @@ while (( SECONDS - start < timeout_s )); do
             break
         fi
     fi
-    # -no-reboot makes QEMU exit on a triple fault.
+    # -no-reboot makes QEMU exit on a triple fault (in every mode but power).
     if ! kill -0 $qemu 2>/dev/null; then result=exited; break; fi
     sleep 0.5
 done
@@ -222,6 +251,13 @@ if [[ "$result" == pass ]]; then
         elif ! check_typing; then result=typing
         elif ! check_commands; then result=command
         fi ;;
+    power)
+        send_keys =reboot ret
+        if ! wait_for_boots 2; then result=reboot
+        else
+            send_keys =poweroff ret # QEMU may be gone before this returns
+            if ! wait_for_exit || ! grep -Fq "$poweroff_marker" "$log"; then result=poweroff; fi
+        fi ;;
     panic)
         send_keys =panic ret
         wait_for "$panic_marker" || result=panic ;;
@@ -231,7 +267,7 @@ if [[ "$result" == pass ]]; then
     esac
 fi
 sleep 1 # let the last lines reach the log, and any stray interrupt arrive
-if [[ "$result" == pass && "$expect" == boot ]] && grep -Eq "$fail_re" "$log"; then result=fail; fi
+if [[ "$result" == pass && ( "$expect" == boot || "$expect" == power ) ]] && grep -Eq "$fail_re" "$log"; then result=fail; fi
 
 label="[$mode/$expect${QEMU_CPU:+ -cpu $QEMU_CPU}]"
 case "$result" in
@@ -246,6 +282,8 @@ kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
 screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
 typing)  echo "FAIL $label the shell did not print these lines (count:text): ${typed[*]}" ;;
 command) echo "FAIL $label the shell command \`$bad\` did not do what it should $(cat "$log.screen" 2>/dev/null):" ;;
+reboot)  echo "FAIL $label \`reboot\` did not restart the machine (\"$ok_marker\" only once):" ;;
+poweroff) echo "FAIL $label \`poweroff\` did not turn the machine off (QEMU still running, or exit status not 0):" ;;
 panic)   echo "FAIL $label the panic command did not panic (\"$panic_marker\"):" ;;
 fault)   echo "FAIL $label \`panic fault\` did not bring up the crash screen (\"$crash_marker\"):" ;;
 exited)  echo "FAIL $label QEMU exited early (triple fault / reset?):" ;;

@@ -23,6 +23,7 @@
 #include <memory.h>
 #include <stddef.h>
 #include <string.h>
+#include <time.h>
 #include <vmm.h>
 
 struct rsdp {
@@ -162,6 +163,12 @@ _Static_assert(offsetof(struct fadt, iapc_boot_arch) == 109, "FADT layout");
 _Static_assert(offsetof(struct fadt, reset_reg) == 116, "FADT layout");
 _Static_assert(offsetof(struct fadt, x_pm_tmr_blk) == 208, "FADT layout");
 
+// PM1 control register bits.
+#define PM1_SCI_EN        (1u << 0) // in ACPI mode (not legacy/SMM mode)
+#define PM1_SLP_TYP_SHIFT 10
+#define PM1_SLP_TYP       (7u << PM1_SLP_TYP_SHIFT)
+#define PM1_SLP_EN        (1u << 13)
+
 #define FADT_TMR_VAL_EXT   (1u << 8)
 #define FADT_RESET_REG_SUP (1u << 10)
 #define FADT_HW_REDUCED    (1u << 20)
@@ -297,6 +304,94 @@ static bool usable_gas(const struct acpi_gas *g) {
     return g->address != 0 && (g->space == ACPI_SPACE_MEMORY || g->space == ACPI_SPACE_IO);
 }
 
+// A PM1 control register block: the X_ GAS if it is set, else the 32-bit
+// port number. 0 if there is none, or it is not in I/O space.
+static uint16_t pm1_cnt_port(const struct acpi_gas *x, uint32_t blk, uint8_t len) {
+    if (x->address != 0) return x->space == ACPI_SPACE_IO && x->address <= 0xffff ? (uint16_t)x->address : 0;
+    return len >= 2 && blk <= 0xffff ? (uint16_t)blk : 0;
+}
+
+// ---------------------------------------------------------------------------
+// \_S5: the SLP_TYP values for soft-off.
+// ---------------------------------------------------------------------------
+
+#define AML_NAME_OP    0x08
+#define AML_PACKAGE_OP 0x12
+
+// An AML integer constant (ZeroOp, OneOp or Byte/Word/DWord/QWordPrefix and
+// its value) at `p`. Returns its length in bytes, or 0 if it isn't one.
+static size_t aml_integer(const uint8_t *p, const uint8_t *end, uint64_t *value) {
+    size_t n;
+    switch (p < end ? *p : 0xff) {
+    case 0x00: *value = 0; return 1;
+    case 0x01: *value = 1; return 1;
+    case 0x0a: n = 1; break;
+    case 0x0b: n = 2; break;
+    case 0x0c: n = 4; break;
+    case 0x0e: n = 8; break;
+    default: return 0;
+    }
+    if ((size_t)(end - p) < 1 + n) return 0;
+    *value = 0;
+    memcpy(value, p + 1, n); // little-endian
+    return 1 + n;
+}
+
+// Look for `Name (\_S5, Package () {SLP_TYPa, SLP_TYPb, ...})` in a
+// table's AML: NameOp, "_S5_" (maybe after a root prefix "\"), PackageOp,
+// PkgLength, NumElements, then the elements.
+static bool find_s5_in(const struct acpi_sdt_header *h) {
+    const uint8_t *aml = (const uint8_t *)(h + 1), *end = (const uint8_t *)h + h->length;
+    for (const uint8_t *p = aml; end - p >= 4; p++) {
+        if (memcmp(p, "_S5_", 4) != 0) continue;
+        const uint8_t *q = p - 1; // the header comes before `aml`, so p - 2 is still in the table
+        if (*q == '\\') q--;
+        if (q < aml || *q != AML_NAME_OP) continue;
+        q = p + 4;
+        if (end - q < 3 || *q++ != AML_PACKAGE_OP) continue;
+        q += 1 + (*q >> 6); // PkgLength: bits 6-7 of its first byte count the bytes after it
+        if (q >= end || *q++ < 2) continue; // NumElements
+        uint64_t a, b;
+        size_t n = aml_integer(q, end, &a);
+        if (n == 0 || aml_integer(q + n, end, &b) == 0) continue;
+        info.s5_slp_typa = a & 7;
+        info.s5_slp_typb = b & 7;
+        return true;
+    }
+    return false;
+}
+
+// Search the DSDT (at `dsdt_phys`), then the SSDTs, for \_S5.
+static void find_s5(uint64_t dsdt_phys) {
+    if (info.pm1a_cnt == 0) return;
+    const struct acpi_sdt_header *dsdt = dsdt_phys ? map_table(dsdt_phys, "DSDT") : NULL;
+    bool found = dsdt && find_s5_in(dsdt);
+    const struct acpi_sdt_header *t;
+    for (size_t i = 0; !found && (t = acpi_find_table_nth("SSDT", i)) != NULL; i++) found = find_s5_in(t);
+    info.can_power_off = found;
+}
+
+void acpi_power_off(void) {
+    if (!info.can_power_off) return;
+
+    // Firmware may leave the machine in legacy mode, where SMM code owns the
+    // power management registers; ask it to switch to ACPI mode first.
+    if (!(inw(info.pm1a_cnt) & PM1_SCI_EN) && info.smi_cmd != 0 && info.acpi_enable_value != 0) {
+        outb(info.smi_cmd, info.acpi_enable_value);
+        for (int i = 0; i < 300 && !(inw(info.pm1a_cnt) & PM1_SCI_EN); i++) sleep_ms(10);
+    }
+
+    // SLP_TYP first, then SLP_EN with it, as ACPICA does.
+    uint16_t a = (inw(info.pm1a_cnt) & ~(PM1_SLP_TYP | PM1_SLP_EN)) | info.s5_slp_typa << PM1_SLP_TYP_SHIFT;
+    uint16_t b = 0;
+    if (info.pm1b_cnt) b = (inw(info.pm1b_cnt) & ~(PM1_SLP_TYP | PM1_SLP_EN)) | info.s5_slp_typb << PM1_SLP_TYP_SHIFT;
+    outw(info.pm1a_cnt, a);
+    if (info.pm1b_cnt) outw(info.pm1b_cnt, b);
+    outw(info.pm1a_cnt, a | PM1_SLP_EN);
+    if (info.pm1b_cnt) outw(info.pm1b_cnt, b | PM1_SLP_EN);
+    sleep_ms(1000); // the power should be gone long before this
+}
+
 static void parse_fadt(const struct acpi_sdt_header *h) {
     struct fadt f;
     memset(&f, 0, sizeof f);
@@ -338,6 +433,14 @@ static void parse_fadt(const struct acpi_sdt_header *h) {
     info.vga_absent = arch & BOOT_ARCH_VGA_ABSENT;
     info.msi_unsupported = arch & BOOT_ARCH_MSI_ABSENT;
     info.cmos_rtc_absent = arch & BOOT_ARCH_CMOS_ABSENT;
+
+    if (!info.hw_reduced) {
+        info.pm1a_cnt = pm1_cnt_port(&f.x_pm1a_cnt_blk, f.pm1a_cnt_blk, f.pm1_cnt_len);
+        info.pm1b_cnt = pm1_cnt_port(&f.x_pm1b_cnt_blk, f.pm1b_cnt_blk, f.pm1_cnt_len);
+        info.smi_cmd = f.smi_cmd <= 0xffff ? f.smi_cmd : 0;
+        info.acpi_enable_value = f.acpi_enable;
+    }
+    find_s5(f.x_dsdt ? f.x_dsdt : f.dsdt);
 }
 
 // ---------------------------------------------------------------------------
@@ -662,6 +765,14 @@ void acpi_print_summary(void) {
                     info.pm_timer_reg.address, info.pm_timer_32bit ? 32 : 24);
         else
             kprintf(" no PM timer\n");
+        if (info.can_power_off) {
+            kprintf("    power off: \\_S5 SLP_TYP %u/%u, PM1a control at I/O port 0x%x", info.s5_slp_typa,
+                    info.s5_slp_typb, info.pm1a_cnt);
+            if (info.pm1b_cnt) kprintf(", PM1b at 0x%x", info.pm1b_cnt);
+            kprintf("\n");
+        } else {
+            kprintf("    power off: not supported (%s)\n", info.pm1a_cnt ? "no \\_S5 found" : "no PM1 control register");
+        }
         kprintf("    boot flags%s: 8042 PS/2 %s, legacy devices %s, VGA %s, MSI %s, CMOS RTC %s\n",
                 info.boot_arch_known ? "" : " (assumed, FADT predates them)", info.has_8042 ? "yes" : "no",
                 info.legacy_devices ? "yes" : "no", info.vga_absent ? "no" : "yes",
