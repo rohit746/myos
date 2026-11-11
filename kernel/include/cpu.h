@@ -29,6 +29,10 @@ static inline uint32_t inl(uint16_t port) {
     return ret;
 }
 
+static inline void outl(uint16_t port, uint32_t val) {
+    __asm__ volatile("outl %0, %w1" : : "a"(val), "Nd"(port) : "memory");
+}
+
 // A short delay for old ISA devices such as the 8259 PIC: port 0x80 is the
 // POST code port, which nothing reads.
 static inline void io_wait(void) { outb(0x80, 0); }

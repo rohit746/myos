@@ -7,7 +7,10 @@
 #          was given, a PIT IRQ came in through the I/O APIC, the timer
 #          tick ran at the calibrated rate, the scheduler preempted threads
 #          that never yield, threads contending on locks got exact counts
-#          (and the lock debug checks fired), the VFS passed its self-test
+#          (and the lock debug checks fired), PCI enumeration found devices
+#          through ECAM and QEMU's edu and igb devices raised an MSI and an
+#          MSI-X (igb sits behind a PCIe root port, so the scan has to go
+#          through a bridge), the VFS passed its self-test
 #          and the initramfs was unpacked into /, user programs passed their
 #          self-test in ring 3, the PS/2 keyboard is ready, and /bin/init
 #          was loaded from the initramfs, passed its libc self-test (files,
@@ -18,7 +21,9 @@
 #          Left/Right, Home/End and the history (Up/Down) are echoed right,
 #          every command prints what it should (kernel commands through the
 #          shell; `ls` and `cat` show files from the initramfs; `user hello`
-#          prints from ring 3, `user kread` gets killed for reading a kernel
+#          prints from ring 3, `lspci` finds the device behind the bridge,
+#          `lspci -n` prints as Linux's does, `lspci -v` shows the MSI-X
+#          the self-test turned on, `user kread` gets killed for reading a kernel
 #          address and the shell carries on; programs run as children of
 #          the shell: `/bin/echo` and `init`, `echo ... > file` writes the
 #          file, `crash` gets killed and the shell says so and carries on,
@@ -51,6 +56,9 @@ irq_marker="IRQ self-test passed"
 timer_marker="timer self-test passed"
 sched_marker="scheduler self-test passed"
 sync_marker="sync self-test passed"
+pci_marker="config space through ECAM"
+msi_marker="edu: BAR mapped, MSI on vector 0x"
+msix_marker="igb: MSI-X on vector 0x"
 vfs_marker="VFS self-test passed"
 initramfs_marker="initramfs: unpacked"
 syscall_marker="system calls via syscall/sysret"
@@ -71,7 +79,7 @@ keys=("=echo " shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
 typed=("2:Hello, World!" "1:MYoS/421" "2:right!" "1:left ok")
 # Commands to run, and a line (extended regex) each must print ("": nothing
 # to wait for; the shell runs the next command once this one is done).
-commands=(help uptime mem cpu acpi ps threads "user hello" "user kread" "user priv" "ls /" "ls /etc" "cat /etc/motd" "ls /dev" "stat /dev/null"
+commands=(help uptime mem cpu acpi ps threads lspci "lspci -n" "lspci -v" "user hello" "user kread" "user priv" "ls /" "ls /etc" "cat /etc/motd" "ls /dev" "stat /dev/null"
           "mkdir /etc" "cat /nope" "/bin/echo from ring 3, via libc" init "/etc/motd" "/bin" "/bin/nope" nope
           "echo into a file > /out" "stat /out" "cat /out" crash "echo still here")
 outputs=("^  reboot +restart the machine"
@@ -81,6 +89,9 @@ outputs=("^  reboot +restart the machine"
          "^ACPI .*: [0-9]+ tables via the"
          "^ +[0-9]+ +running +[0-9]+ +[0-9]+ +sh"
          "^threads: 4 threads ran and exited"
+         "^01:00\.0 Ethernet controller \[0200\]: 8086:10c9 \(rev 01\)"
+         "^00:1f\.2 0106: 8086:2922 \(rev 02\)"
+         "Capabilities: \[70\] MSI-X: Enable\+ Count=10 Masked-"
          "^process [0-9]+ \(hello\) exited with status 0"
          "^process [0-9]+ \(kread\) killed: page fault at 0xffffffff80000000 \(read, protection violation\)"
          "^process [0-9]+ \(priv\) killed: General protection fault \(exception 13"
@@ -107,7 +118,7 @@ poweroff_marker="Powering off..."
 crash_marker="CPU EXCEPTION 14: Page fault"
 panic_marker="KERNEL PANIC *** panic command"
 halted_marker="System halted."
-fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PS/2|/bin/init)|init: (check failed|can.t start)"
+fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PCI|PS/2|/bin/init)|init: (check failed|can.t start)"
 
 [[ -f "$iso" ]] || { echo "boot-test: $iso not found"; exit 2; }
 mkdir -p "$(dirname "$log")"
@@ -116,7 +127,8 @@ mkdir -p "$(dirname "$log")"
 monitor="$log.mon"
 rm -f "$monitor" "$log.screen"
 args=(-M q35 -m 512M -cpu "${QEMU_CPU:-max}" -smp "$smp" -vga std -display none
-      -serial "file:$log" -monitor "unix:$monitor,server=on,wait=off" -cdrom "$iso")
+      -serial "file:$log" -monitor "unix:$monitor,server=on,wait=off" -cdrom "$iso"
+      -device edu -device pcie-root-port,id=rp1,chassis=1 -device igb,bus=rp1)
 [[ "$expect" == power ]] || args+=(-no-reboot)
 if [[ "$mode" == uefi ]]; then
     [[ -n "${OVMF:-}" && -f "${OVMF}" ]] || { echo "boot-test: UEFI firmware not found (set OVMF)"; exit 2; }
@@ -276,6 +288,8 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$timer_marker" "$log"; then result=timer
             elif ! grep -Fq "$sched_marker" "$log"; then result=sched
             elif ! grep -Fq "$sync_marker" "$log"; then result=sync
+            elif ! grep -Fq "$pci_marker" "$log"; then result=pci
+            elif ! grep -Fq "$msi_marker" "$log" || ! grep -Fq "$msix_marker" "$log"; then result=msi
             elif ! grep -Fq "$vfs_marker" "$log"; then result=vfs
             elif ! grep -Fq "$initramfs_marker" "$log"; then result=initramfs
             elif ! grep -Fq "$syscall_marker" "$log"; then result=syscall
@@ -332,6 +346,8 @@ irq)     echo "FAIL $label no device IRQ through the I/O APIC (\"$irq_marker\"):
 timer)   echo "FAIL $label the timer tick did not pass its self-test (\"$timer_marker\"):" ;;
 sched)   echo "FAIL $label the scheduler did not pass its self-test (\"$sched_marker\"):" ;;
 sync)    echo "FAIL $label the locks did not pass their self-test (\"$sync_marker\"):" ;;
+pci)     echo "FAIL $label PCI enumeration did not find devices through ECAM (\"$pci_marker\"):" ;;
+msi)     echo "FAIL $label QEMU's edu and igb devices did not raise an MSI and an MSI-X (\"$msi_marker\", \"$msix_marker\"):" ;;
 vfs)     echo "FAIL $label the VFS did not pass its self-test (\"$vfs_marker\"):" ;;
 initramfs) echo "FAIL $label the initramfs was not unpacked (\"$initramfs_marker\"):" ;;
 syscall) echo "FAIL $label system calls were not set up (\"$syscall_marker\"):" ;;

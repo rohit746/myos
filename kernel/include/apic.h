@@ -6,6 +6,8 @@
 //   0x00-0x1f  CPU exceptions
 //   0x20-0x2f  the 8259 PICs, remapped out of the way and fully masked
 //   0x30-0x3f  ISA IRQs 0-15, through the I/O APIC (IRQ_VECTOR_BASE + irq)
+//   0x40-0xef  message-signalled interrupts (PCI MSI and MSI-X), handed out
+//              by msi_vector_alloc()
 //   0xf0       local APIC timer
 //   0xff       local APIC spurious interrupt
 
@@ -15,6 +17,8 @@
 
 #define PIC_VECTOR_BASE      0x20
 #define IRQ_VECTOR_BASE      0x30
+#define MSI_VECTOR_BASE      0x40
+#define MSI_VECTOR_END       0xf0 // one past the last
 #define LAPIC_TIMER_VECTOR   0xf0
 #define APIC_SPURIOUS_VECTOR 0xff
 
@@ -52,6 +56,24 @@ uint32_t irq_register(uint8_t isa_irq, interrupt_handler_t handler);
 
 // Mask ISA IRQ `isa_irq` again and drop its handler.
 void irq_unregister(uint8_t isa_irq);
+
+// Message-signalled interrupts: a device raises one by writing `data` to
+// `address`, which the local APIC turns into an interrupt on `vector`.
+// msi_vector_alloc() takes a free vector in 0x40-0xef for `handler` (the
+// local APIC gets its EOI after `handler` returns) and fills in the message
+// that raises it on this CPU, edge-triggered, fixed delivery. It returns
+// false when every vector is taken, or when this CPU's APIC ID is above 255,
+// which an MSI can't name without interrupt remapping.
+struct msi_message {
+    uint8_t vector;
+    uint64_t address;
+    uint32_t data;
+};
+
+bool msi_vector_alloc(interrupt_handler_t handler, struct msi_message *msg);
+
+// Give the vector back. The device must not raise it any more.
+void msi_vector_free(uint8_t vector);
 
 struct apic_info {
     bool x2apic;            // the local APIC is in x2APIC mode (MSRs, not MMIO)

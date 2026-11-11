@@ -12,6 +12,7 @@
 #include <kprintf.h>
 #include <limine.h>
 #include <memory.h>
+#include <pci.h>
 #include <pmm.h>
 #include <proc.h>
 #include <sched.h>
@@ -384,6 +385,13 @@ void kmain(void) {
 
     sync_self_test(line, sizeof line);
     ok(line);
+
+    pci_init(line, sizeof line);
+    if (pci_device_count()) ok(line);
+    else warn_line(line);
+
+    if (pci_self_test(line, sizeof line)) ok(line);
+    else warn_line(line);
 
     vfs_init();
     ok("VFS: tmpfs mounted on /, devfs on /dev (console, null, zero)");

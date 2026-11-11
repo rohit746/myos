@@ -43,6 +43,12 @@ SECTIONS
         shell_commands_start = .;
         KEEP(*(.shell_commands))
         shell_commands_end = .;
+
+        /* The PCI driver table: every PCI_DRIVER (pci.h). */
+        . = ALIGN(8);
+        pci_drivers_start = .;
+        KEEP(*(.pci_drivers))
+        pci_drivers_end = .;
     } :rodata
     rodata_end = .;
 
