@@ -9,10 +9,13 @@
 // can't touch the kernel.
 //
 // User memory layout:
-//   USER_CODE_BASE   the program (read-only, executable), entered at its
-//                    first byte with the process's `arg` in rdi
+//   ELF_LOAD_MIN..   a program's segments (elf.h); a built-in program goes
+//                    at USER_CODE_BASE (read-only, executable) and is
+//                    entered at its first byte with the process's `arg` in
+//                    rdi
 //   USER_MMAP_BASE   up: what mmap hands out
-//   USER_STACK_TOP   down: the stack, USER_STACK_PAGES pages
+//   USER_STACK_TOP   down: the stack, USER_STACK_PAGES pages; an ELF
+//                    program finds its arguments on it (process_create_elf)
 //   USER_END         the last page of the lower half is never mapped: a
 //                    `syscall` at its very end would make sysret return to
 //                    a non-canonical address, which faults in ring 0
@@ -25,11 +28,14 @@
 // kernel. With SMAP, any other kernel access to user memory page-faults;
 // with SMEP, so does running user code in ring 0.
 //
-// Programs: there is no ELF loader yet (#19), so the programs are flat,
-// position-independent code built into the kernel (user_programs.S).
+// Programs: static ELF executables, loaded from files (process_exec; the
+// ones in the initramfs are built from user/), and a few flat test programs
+// built into the kernel (user_programs.S) that the self-test and the shell's
+// `user` command run.
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <memory.h>
 #include <stdint.h>
 #include <sync.h>
 #include <vmm.h>
@@ -47,6 +53,8 @@ struct process {
     uint64_t pid;
     char name[24];
     struct vmm_space space;
+    uint64_t entry;     // where it starts running
+    uint64_t user_rsp;  // its stack pointer at the start
     uint64_t arg;       // rdi at the entry point
     uint64_t mmap_next; // where the next mmap goes
     struct semaphore done; // up once the process has ended and its memory is freed
@@ -67,6 +75,39 @@ struct process {
 // A new process running `size` bytes of code (copied) with `arg` in rdi.
 // It doesn't start until process_start(). NULL if there is no memory.
 struct process *process_create(const char *name, const void *code, size_t size, uint64_t arg);
+
+// A new process running the static ELF executable `image` (`size` bytes,
+// copied; see elf.h), with the NULL-terminated lists `argv` and `envp`
+// copied to the top of its stack the way the System V ABI lays them out:
+//
+//   rsp ->  argc
+//           argv[0] ... argv[argc - 1], NULL
+//           envp[0] ... NULL
+//           auxiliary vector: (type, value) pairs, ending with AT_NULL
+//           ...
+//           the strings, up to USER_STACK_TOP
+//
+// rsp is 16-byte aligned, and every other register is zero. Sets *out and
+// returns 0, or returns -ENOEXEC (elf_load), -E2BIG if the arguments take
+// more than USER_ARGS_MAX bytes, or -ENOMEM. Not started yet, as for
+// process_create.
+#define USER_ARGS_MAX (USER_STACK_PAGES * PAGE_SIZE / 4)
+int process_create_elf(const char *name, const void *image, size_t size, char *const argv[], char *const envp[],
+                       struct process **out);
+
+// The same for the executable file at `path`, named after the file. Also
+// -ENOENT and the other errors of opening and reading it, and -EACCES if
+// it isn't a regular file.
+int process_exec(const char *path, char *const argv[], char *const envp[], struct process **out);
+
+// The environment programs the kernel starts get: PATH=/bin and HOME=/.
+extern char *const process_default_env[];
+
+// Run the executable at `path` with `argv` and the default environment, and
+// wait for it to end. Returns 0 and sets *status to its exit status, or -1
+// if it was killed (the kill was reported on the console); or returns
+// process_exec's error.
+int process_run(const char *path, char *const argv[], int *status);
 
 // Start it in a thread of its own. False if there is no memory (then free it
 // with process_free).
@@ -99,7 +140,9 @@ int copy_to_user(uint64_t user_dst, const void *src, size_t n);
 // mode (and writable, with `write`).
 bool user_range_ok(uint64_t addr, size_t n, bool write);
 
-// Boot self-test: run the built-in programs in ring 3. One makes every
+// Boot self-test: load a test program from an ELF image built in memory
+// and run it, and check that broken images are refused with -ENOEXEC. Run
+// the built-in programs in ring 3. One makes every
 // system call and checks the results, including -EFAULT for kernel and
 // unmapped pointers; one reads a kernel address and one runs `cli`, and both
 // get killed; two spin at once, at the same addresses in their own address

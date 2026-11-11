@@ -53,8 +53,11 @@ const char *strerror(int err) {
     case EPERM: return "Operation not permitted";
     case ENOENT: return "No such file or directory";
     case EIO: return "Input/output error";
+    case E2BIG: return "Argument list too long";
+    case ENOEXEC: return "Exec format error";
     case EBADF: return "Bad file descriptor";
     case ENOMEM: return "Out of memory";
+    case EACCES: return "Permission denied";
     case EFAULT: return "Bad address";
     case EBUSY: return "Device or resource busy";
     case EEXIST: return "File exists";

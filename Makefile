@@ -1,6 +1,7 @@
 # myos — build system
 #
 #   make            build build/myos.iso (boots on UEFI and legacy BIOS)
+#   make user       build the user programs (user/) into build/user
 #   make run        boot the ISO in QEMU with UEFI firmware
 #   make run-bios   boot the ISO in QEMU with legacy BIOS
 #   make debug      like `run`, but wait for gdb on :1234, and freeze instead of
@@ -76,7 +77,7 @@ QEMU_COMMON = qemu-system-x86_64 -M q35 -m 512M -cpu max -smp 4 \
 	-vga none -device VGA,xres=$(RES_X),yres=$(RES_Y),vgamem_mb=32 \
 	-serial stdio
 
-.PHONY: all kernel run run-bios debug usb test test-crash crash-test compdb clean FORCE
+.PHONY: all kernel user run run-bios debug usb test test-crash crash-test compdb clean FORCE
 
 all: $(ISO)
 kernel: $(KERNEL)
@@ -104,13 +105,57 @@ $(BUILD)/obj/kernel/src/font.S.o: vendor/spleen/spleen-8x16.psf
 $(KERNEL): $(OBJS) kernel/linker.ld
 	$(LD) $(LDFLAGS) $(OBJS) -o $@
 
-# The initramfs: everything under initramfs/, as a USTAR archive that Limine
-# loads as a module and the kernel unpacks into / (see limine.conf).
+# User programs (user/): each user/bin/<name>.c is linked with crt0 and the
+# libc into a static executable, build/user/<name>.elf (with debug info, for
+# llvm-symbolizer), and stripped into the initramfs as /bin/<name>. No SSE:
+# the kernel doesn't save SSE registers between processes yet.
+USER_BUILD := $(BUILD)/user
+
+USER_CFLAGS := \
+	--target=$(TARGET) -std=gnu11 -O2 -g -pipe \
+	-Wall -Wextra -Wno-unused-parameter \
+	-ffreestanding -fno-builtin -fno-stack-protector -fno-stack-check \
+	-fno-pic -fno-pie -fno-lto -fno-omit-frame-pointer \
+	-fno-asynchronous-unwind-tables -fno-unwind-tables \
+	-ffunction-sections -fdata-sections \
+	-march=x86-64 -mno-80387 -mno-mmx -mno-sse -mno-sse2 \
+	-nostdinc -isystem user/include -isystem $(CLANG_INC) \
+	-MMD -MP $(EXTRA_CFLAGS)
+
+USER_LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
+	--no-dynamic-linker --gc-sections -T user/linker.ld
+
+USER_LIBC_SRCS := user/crt0.S $(wildcard user/libc/*.c user/libc/*.S)
+USER_LIBC_OBJS := $(USER_LIBC_SRCS:%=$(USER_BUILD)/obj/%.o)
+USER_PROGS := $(patsubst user/bin/%.c,%,$(wildcard user/bin/*.c))
+USER_BINS := $(USER_PROGS:%=$(USER_BUILD)/root/bin/%)
+USER_OBJS := $(USER_LIBC_OBJS) $(USER_PROGS:%=$(USER_BUILD)/obj/user/bin/%.c.o)
+
+$(USER_BUILD)/obj/%.c.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/obj/%.S.o: %.S
+	@mkdir -p $(dir $@)
+	$(CC) --target=$(TARGET) -g -MMD -MP -c $< -o $@
+
+$(USER_BUILD)/%.elf: $(USER_BUILD)/obj/user/bin/%.c.o $(USER_LIBC_OBJS) user/linker.ld
+	$(LD) $(USER_LDFLAGS) $(USER_LIBC_OBJS) $< -o $@
+
+$(USER_BUILD)/root/bin/%: $(USER_BUILD)/obj/user/bin/%.c.o $(USER_LIBC_OBJS) user/linker.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) --strip-all $(USER_LIBC_OBJS) $< -o $@
+
+user: $(USER_BINS) $(USER_PROGS:%=$(USER_BUILD)/%.elf)
+
+# The initramfs: everything under initramfs/, and the user programs in
+# /bin, as a USTAR archive that Limine loads as a module and the kernel
+# unpacks into / (see limine.conf).
 INITRAMFS_FILES := $(shell find initramfs -type f -o -type d)
 
-$(INITRAMFS): $(INITRAMFS_FILES) scripts/mkinitramfs.py
+$(INITRAMFS): $(INITRAMFS_FILES) $(USER_BINS) $(USER_PROGS:%=$(USER_BUILD)/%.elf) scripts/mkinitramfs.py
 	@mkdir -p $(dir $@)
-	python3 -I scripts/mkinitramfs.py initramfs $@
+	python3 -I scripts/mkinitramfs.py $@ initramfs $(USER_BUILD)/root
 
 # Host tool that patches the ISO so it also boots on legacy BIOS.
 $(LIMINE)/limine: $(LIMINE)/limine.c
@@ -167,11 +212,11 @@ crash-test:
 
 # compile_commands.json so editors (clangd) see the real x86-64 flags.
 compdb:
-	@python3 -c 'import json,os,sys; d=os.getcwd(); f=sys.argv[1]; print(json.dumps([{"directory":d,"file":s,"arguments":["$(CC)"]+f.split()+["-c",s]} for s in sys.argv[2:]],indent=1))' \
-	  "$(CFLAGS)" $(filter %.c,$(SRCS)) > compile_commands.json
+	@python3 -c 'import json,os,sys; d=os.getcwd(); k,u=sys.argv[1].split(), sys.argv[2].split(); print(json.dumps([{"directory":d,"file":s,"arguments":["$(CC)"]+(u if s.startswith("user/") else k)+["-c",s]} for s in sys.argv[3:]],indent=1))' \
+	  "$(CFLAGS)" "$(USER_CFLAGS)" $(filter %.c,$(SRCS) $(USER_LIBC_SRCS)) $(wildcard user/bin/*.c) > compile_commands.json
 	@echo "==> compile_commands.json written"
 
 clean:
 	rm -rf $(BUILD)
 
--include $(OBJS:.o=.d)
+-include $(OBJS:.o=.d) $(USER_OBJS:.o=.d)

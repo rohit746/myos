@@ -2,6 +2,7 @@
 
 #include <arch.h>
 #include <cpu.h>
+#include <elf.h>
 #include <errno.h>
 #include <kheap.h>
 #include <kprintf.h>
@@ -13,6 +14,7 @@
 #include <string.h>
 #include <syscall.h>
 #include <time.h>
+#include <vfs.h>
 #include <vmm.h>
 
 // syscall.S
@@ -46,7 +48,11 @@ static bool map_pages(struct process *p, uint64_t virt, uint64_t pages, const vo
     return true;
 }
 
-struct process *process_create(const char *name, const void *code, size_t size, uint64_t arg) {
+_Static_assert(ELF_LOAD_END == USER_MMAP_BASE, "ELF segments go below what mmap hands out");
+_Static_assert(USER_CODE_BASE >= ELF_LOAD_MIN, "built-in programs go where ELF segments may");
+
+// A process with an empty address space but for its stack, and no pid yet.
+static struct process *process_alloc(const char *name) {
     struct process *p = kcalloc(1, sizeof *p);
     if (p == NULL) return NULL;
     preempt_disable();
@@ -59,19 +65,166 @@ struct process *process_create(const char *name, const void *code, size_t size, 
     size_t n = strlen(name);
     if (n >= sizeof p->name) n = sizeof p->name - 1;
     memcpy(p->name, name, n);
-    p->arg = arg;
     p->mmap_next = USER_MMAP_BASE;
     p->fault = -1;
+    p->user_rsp = USER_STACK_TOP;
     sem_init(&p->done, 0);
-
-    if (!map_pages(p, USER_CODE_BASE, ALIGN_UP(size, PAGE_SIZE) / PAGE_SIZE, code, size, VMM_USER | VMM_EXEC) ||
-        !map_pages(p, USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE, USER_STACK_PAGES, NULL, 0,
+    if (!map_pages(p, USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE, USER_STACK_PAGES, NULL, 0,
                    VMM_USER | VMM_WRITE)) {
         process_free(p);
         return NULL;
     }
-    p->pid = __atomic_fetch_add(&next_pid, 1, __ATOMIC_RELAXED);
     return p;
+}
+
+static void assign_pid(struct process *p) { p->pid = __atomic_fetch_add(&next_pid, 1, __ATOMIC_RELAXED); }
+
+struct process *process_create(const char *name, const void *code, size_t size, uint64_t arg) {
+    struct process *p = process_alloc(name);
+    if (p == NULL) return NULL;
+    p->arg = arg;
+    p->entry = USER_CODE_BASE;
+    if (!map_pages(p, USER_CODE_BASE, ALIGN_UP(size, PAGE_SIZE) / PAGE_SIZE, code, size, VMM_USER | VMM_EXEC)) {
+        process_free(p);
+        return NULL;
+    }
+    assign_pid(p);
+    return p;
+}
+
+// Copy `n` bytes between `buf` and `virt` in a process that isn't running,
+// through the HHDM. The pages must be mapped.
+static void hhdm_copy(struct process *p, uint64_t virt, void *buf, size_t n, bool to_process) {
+    uint8_t *b = buf;
+    while (n > 0) {
+        uint64_t phys;
+        if (!vmm_virt_to_phys(&p->space, virt, &phys)) panic("process memory at %p is not mapped", (void *)virt);
+        size_t chunk = PAGE_SIZE - (virt & (PAGE_SIZE - 1));
+        if (chunk > n) chunk = n;
+        if (to_process) memcpy(phys_to_virt(phys), b, chunk);
+        else memcpy(b, phys_to_virt(phys), chunk);
+        virt += chunk;
+        b += chunk;
+        n -= chunk;
+    }
+}
+
+static void poke(struct process *p, uint64_t virt, const void *src, size_t n) {
+    hhdm_copy(p, virt, (void *)src, n, true);
+}
+
+// How many entries `list` has, and the bytes its strings take with their
+// NULs. False if that is over `max` bytes (counting a pointer for each).
+static bool measure(char *const list[], size_t max, size_t *count, size_t *bytes) {
+    size_t n = 0, b = 0;
+    for (; list[n]; n++) {
+        b += strlen(list[n]) + 1 + sizeof(uint64_t);
+        if (b > max) return false;
+    }
+    *count = n;
+    *bytes = b - n * sizeof(uint64_t);
+    return true;
+}
+
+// Lay out argc, argv, envp, the auxiliary vector and the strings at the top
+// of the stack (see proc.h), and point user_rsp at argc.
+static int push_args(struct process *p, char *const argv[], char *const envp[], const struct elf_info *elf) {
+    size_t argc, envc, argv_bytes, envp_bytes;
+    if (!measure(argv, USER_ARGS_MAX, &argc, &argv_bytes) || !measure(envp, USER_ARGS_MAX, &envc, &envp_bytes))
+        return -E2BIG;
+    uint64_t aux[][2] = {
+        {AT_PHDR, elf->phdr},   {AT_PHENT, sizeof(Elf64_Phdr)}, {AT_PHNUM, elf->phnum},
+        {AT_PAGESZ, PAGE_SIZE}, {AT_ENTRY, elf->entry},         {AT_NULL, 0},
+    };
+    size_t aux_skip = elf->phdr ? 0 : 1; // no AT_PHDR when the headers aren't in memory
+    size_t aux_words = 2 * (sizeof aux / sizeof aux[0] - aux_skip);
+    size_t words = 1 + (argc + 1) + (envc + 1) + aux_words;
+    size_t strings = argv_bytes + envp_bytes;
+    if (strings + words * sizeof(uint64_t) + 16 > USER_ARGS_MAX) return -E2BIG;
+
+    uint64_t *w = kmalloc(words * sizeof *w);
+    if (w == NULL) return -ENOMEM;
+    uint64_t str = USER_STACK_TOP - strings; // the strings, from here to the top
+    uint64_t sp = ALIGN_DOWN(str - words * sizeof *w, 16);
+    size_t i = 0;
+    w[i++] = argc;
+    char *const *lists[] = {argv, envp};
+    for (size_t l = 0; l < 2; l++) {
+        for (char *const *s = lists[l]; *s; s++) {
+            size_t n = strlen(*s) + 1;
+            poke(p, str, *s, n);
+            w[i++] = str;
+            str += n;
+        }
+        w[i++] = 0;
+    }
+    memcpy(&w[i], aux[aux_skip], aux_words * sizeof *w);
+    poke(p, sp, w, words * sizeof *w);
+    kfree(w);
+    p->user_rsp = sp;
+    return 0;
+}
+
+int process_create_elf(const char *name, const void *image, size_t size, char *const argv[], char *const envp[],
+                       struct process **out) {
+    struct process *p = process_alloc(name);
+    if (p == NULL) return -ENOMEM;
+    struct elf_info elf;
+    int err = elf_load(&p->space, image, size, &elf);
+    if (err == 0) err = push_args(p, argv, envp, &elf);
+    if (err) {
+        process_free(p);
+        return err;
+    }
+    p->entry = elf.entry;
+    assign_pid(p);
+    *out = p;
+    return 0;
+}
+
+int process_exec(const char *path, char *const argv[], char *const envp[], struct process **out) {
+    struct vfs_stat st;
+    int err = vfs_stat(path, &st);
+    if (err) return err;
+    if (st.type != VNODE_FILE) return -EACCES;
+    int fd = vfs_open(path, O_RDONLY);
+    if (fd < 0) return fd;
+    // The file can't change size meanwhile: nothing else writes to it during
+    // boot or while the shell waits for the program.
+    uint8_t *image = kmalloc(st.size ? st.size : 1);
+    size_t got = 0;
+    err = image ? 0 : -ENOMEM;
+    while (err == 0 && got < st.size) {
+        int64_t n = vfs_read(fd, image + got, st.size - got);
+        if (n < 0) err = (int)n;
+        else if (n == 0) break;
+        else got += (size_t)n;
+    }
+    vfs_close(fd);
+    if (err == 0) {
+        const char *name = path;
+        for (const char *c = path; *c; c++)
+            if (*c == '/' && c[1]) name = c + 1;
+        err = process_create_elf(name, image, got, argv, envp, out);
+    }
+    kfree(image);
+    return err;
+}
+
+char *const process_default_env[] = {"PATH=/bin", "HOME=/", NULL};
+
+int process_run(const char *path, char *const argv[], int *status) {
+    struct process *p;
+    int err = process_exec(path, argv, process_default_env, &p);
+    if (err) return err;
+    if (!process_start(p)) {
+        process_free(p);
+        return -ENOMEM;
+    }
+    process_wait(p);
+    *status = p->fault == -1 ? p->status : -1;
+    process_free(p);
+    return 0;
 }
 
 // The process's thread: move into its address space and drop to ring 3.
@@ -82,7 +235,7 @@ static void process_main(void *arg) {
     t->proc = p;
     t->cr3 = p->space.pml4;
     write_cr3(t->cr3);
-    enter_user(USER_CODE_BASE, USER_STACK_TOP, p->arg);
+    enter_user(p->entry, p->user_rsp, p->arg);
 }
 
 bool process_start(struct process *p) { return thread_create(p->name, process_main, p) != NULL; }
@@ -254,6 +407,153 @@ static struct process *spawn(const char *name, uint64_t arg, char *out, size_t o
 // Boot self-test
 // ---------------------------------------------------------------------------
 
+// An ELF image of the `hello` program: one read-only, executable segment
+// with the headers at its start (file offset 0) and the code at TEST_ENTRY,
+// and one read/write segment that is all .bss.
+#define TEST_VADDR     ((uint64_t)0x400000)
+#define TEST_ENTRY     (TEST_VADDR + PAGE_SIZE)
+#define TEST_BSS_VADDR ((uint64_t)0x600000)
+#define TEST_BSS_SIZE  (3 * PAGE_SIZE + 5)
+
+struct test_headers {
+    Elf64_Ehdr h;
+    Elf64_Phdr ph[2];
+};
+
+static size_t test_elf_size(void) { return PAGE_SIZE + (size_t)(user_hello_end - user_hello); }
+
+static void test_elf(uint8_t *image) {
+    size_t size = test_elf_size();
+    struct test_headers t = {
+        .h = {.e_ident = {0x7f, 'E', 'L', 'F', ELFCLASS64, ELFDATA2LSB, EV_CURRENT},
+              .e_type = ET_EXEC,
+              .e_machine = EM_X86_64,
+              .e_version = EV_CURRENT,
+              .e_entry = TEST_ENTRY,
+              .e_phoff = sizeof(Elf64_Ehdr),
+              .e_ehsize = sizeof(Elf64_Ehdr),
+              .e_phentsize = sizeof(Elf64_Phdr),
+              .e_phnum = 2},
+        .ph = {{PT_LOAD, PF_R | PF_X, 0, TEST_VADDR, TEST_VADDR, size, size, PAGE_SIZE},
+               {PT_LOAD, PF_R | PF_W, 0, TEST_BSS_VADDR, TEST_BSS_VADDR, 0, TEST_BSS_SIZE, PAGE_SIZE}},
+    };
+    memset(image, 0, size);
+    memcpy(image, &t, sizeof t);
+    memcpy(image + PAGE_SIZE, user_hello, (size_t)(user_hello_end - user_hello));
+}
+
+// Images elf_load must refuse: each is the good one with one thing broken.
+static void break_elf(int which, struct test_headers *t, size_t *size) {
+    Elf64_Phdr *code = &t->ph[0], *bss = &t->ph[1];
+    switch (which) {
+    case 0: t->h.e_ident[1] = 'X'; break;                     // not ELF
+    case 1: t->h.e_ident[4] = 1; break;                       // 32-bit
+    case 2: t->h.e_type = ET_DYN; break;                      // position-independent
+    case 3: t->h.e_machine = 3; break;                        // i386
+    case 4: t->h.e_phnum = 0; break;                          // no program headers
+    case 5: t->h.e_phoff = *size - 8; break;                  // headers past the end of the file
+    case 6: *size = sizeof t->h - 1; break;                   // truncated header
+    case 7: code->p_filesz = code->p_memsz + 1; break;        // more file than memory
+    case 8: code->p_offset = PAGE_SIZE; break;                // bytes past the end of the file
+    case 9: bss->p_vaddr = 0xffffffff80000000; break;         // in the kernel half
+    case 10: bss->p_vaddr = USER_MMAP_BASE - PAGE_SIZE; break; // runs into the mmap area
+    case 11: bss->p_memsz = UINT64_MAX - PAGE_SIZE; break;    // wraps around
+    case 12: bss->p_vaddr = PAGE_SIZE; break;                 // below ELF_LOAD_MIN
+    case 13: bss->p_vaddr = TEST_VADDR + *size; break;        // shares a page with the code
+    case 14: t->h.e_entry = TEST_BSS_VADDR; break;            // entry not in an executable segment
+    case 15: bss->p_type = PT_INTERP; break;                  // wants a dynamic linker
+    case 16: code->p_type = PT_NULL; break;                   // the entry isn't loaded at all
+    }
+}
+
+#define BROKEN_ELFS 17
+
+static uint64_t peek64(struct process *p, uint64_t virt) {
+    uint64_t v;
+    hhdm_copy(p, virt, &v, sizeof v, false);
+    return v;
+}
+
+static void peek_string(struct process *p, uint64_t virt, char *buf, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        hhdm_copy(p, virt + i, &buf[i], 1, false);
+        if (buf[i] == '\0') return;
+    }
+    buf[size - 1] = '\0';
+}
+
+// Load the test image, check its memory and stack before it runs, run it;
+// then the broken images.
+static void elf_self_test(void) {
+    static char out[256];
+    size_t size = test_elf_size();
+    uint8_t *image = kmalloc(size), *bad = kmalloc(size);
+    if (image == NULL || bad == NULL) panic("ELF self-test: no memory");
+    test_elf(image);
+
+    char *argv[] = {"hello", "two words", NULL}, *envp[] = {"A=1", NULL};
+    struct process *p;
+    int err = process_create_elf("hello.elf", image, size, argv, envp, &p);
+    if (err) panic("ELF self-test: the test image did not load: %s", strerror(err));
+
+    // Code read-only, .bss writable and zero to its last byte, nothing past it.
+    if (!vmm_user_accessible(&p->space, TEST_ENTRY, false) || vmm_user_accessible(&p->space, TEST_ENTRY, true))
+        panic("ELF self-test: the code segment is not mapped read-only");
+    for (uint64_t v = TEST_BSS_VADDR; v < TEST_BSS_VADDR + TEST_BSS_SIZE; v += PAGE_SIZE)
+        if (!vmm_user_accessible(&p->space, v, true)) panic("ELF self-test: .bss page %p is not writable", (void *)v);
+    if (peek64(p, ALIGN_DOWN(TEST_BSS_VADDR + TEST_BSS_SIZE - 1, 8)) != 0) panic("ELF self-test: .bss is not zero");
+    uint64_t past;
+    if (vmm_virt_to_phys(&p->space, ALIGN_UP(TEST_BSS_VADDR + TEST_BSS_SIZE, PAGE_SIZE), &past))
+        panic("ELF self-test: a page past .bss is mapped");
+
+    // The stack: argc, argv, envp, the auxiliary vector.
+    uint64_t sp = p->user_rsp;
+    char s[32];
+    if (sp % 16 != 0) panic("ELF self-test: the stack pointer %p is not 16-byte aligned", (void *)sp);
+    if (peek64(p, sp) != 2) panic("ELF self-test: argc is %lu, not 2", peek64(p, sp));
+    peek_string(p, peek64(p, sp + 16), s, sizeof s);
+    if (strcmp(s, "two words") != 0 || peek64(p, sp + 24) != 0) panic("ELF self-test: argv[1] is \"%s\"", s);
+    peek_string(p, peek64(p, sp + 32), s, sizeof s);
+    if (strcmp(s, "A=1") != 0 || peek64(p, sp + 40) != 0) panic("ELF self-test: envp[0] is \"%s\"", s);
+    uint64_t want[][2] = {{AT_PHDR, TEST_VADDR + sizeof(Elf64_Ehdr)}, {AT_PHENT, sizeof(Elf64_Phdr)},
+                          {AT_PHNUM, 2}, {AT_PAGESZ, PAGE_SIZE}, {AT_ENTRY, TEST_ENTRY}, {AT_NULL, 0}};
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        uint64_t at = sp + 48 + i * 16;
+        if (peek64(p, at) != want[i][0] || peek64(p, at + 8) != want[i][1])
+            panic("ELF self-test: auxv[%lu] is (%lu, %p), not (%lu, %p)", i, peek64(p, at), (void *)peek64(p, at + 8),
+                  want[i][0], (void *)want[i][1]);
+    }
+
+    p->out = out;
+    p->out_size = sizeof out;
+    out[0] = '\0';
+    if (!process_start(p)) panic("ELF self-test: no memory");
+    process_wait(p);
+    if (p->fault != -1 || p->status != 0 || strcmp(out, "Hello from ring 3!\n") != 0)
+        panic("ELF self-test: the program ended with status %d, fault %d (output: %s)", p->status, p->fault, out);
+    process_free(p);
+
+    for (int i = 0; i < BROKEN_ELFS; i++) {
+        memcpy(bad, image, size);
+        size_t bad_size = size;
+        break_elf(i, (struct test_headers *)bad, &bad_size);
+        err = process_create_elf("broken.elf", bad, bad_size, argv, envp, &p);
+        if (err != -ENOEXEC) panic("ELF self-test: broken image %d gave %d, not -ENOEXEC", i, err);
+    }
+
+    // Arguments that don't fit on the stack.
+    char *big = kmalloc(USER_ARGS_MAX);
+    if (big == NULL) panic("ELF self-test: no memory");
+    memset(big, 'x', USER_ARGS_MAX - 1);
+    big[USER_ARGS_MAX - 1] = '\0';
+    char *big_argv[] = {"big", big, NULL};
+    err = process_create_elf("big.elf", image, size, big_argv, envp, &p);
+    if (err != -E2BIG) panic("ELF self-test: too many argument bytes gave %d, not -E2BIG", err);
+    kfree(big);
+    kfree(bad);
+    kfree(image);
+}
+
 #define TEST_SPINNERS 2
 #define TEST_SPIN_MS  50
 
@@ -286,6 +586,8 @@ void process_self_test(char *line, size_t size) {
     uint64_t held0 = pages_held();
     uint64_t allocs0 = kheap_get_stats().allocations;
     static char out[256];
+
+    elf_self_test();
 
     // Every system call, from ring 3.
     struct process *p = spawn("hello", 0, out, sizeof out);
@@ -325,9 +627,9 @@ void process_self_test(char *line, size_t size) {
     if (allocs != allocs0) panic("user self-test: %lu heap allocations before, %lu after", allocs0, allocs);
 
     ksnprintf(line, size,
-              "user mode self-test passed (syscalls checked from ring 3; kernel read, cli killed; "
-              "%d spinners preempted, %lu+ turns each)",
-              TEST_SPINNERS, least);
+              "user mode self-test passed (ELF loaded with argv/envp/auxv, %d broken ones refused; syscalls "
+              "checked from ring 3; kernel read, cli killed; %d spinners preempted, %lu+ turns each)",
+              BROKEN_ELFS, TEST_SPINNERS, least);
 }
 
 // ---------------------------------------------------------------------------

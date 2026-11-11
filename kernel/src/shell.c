@@ -16,6 +16,7 @@
 #include <kprintf.h>
 #include <memory.h>
 #include <pmm.h>
+#include <proc.h>
 #include <sched.h>
 #include <shell.h>
 #include <stddef.h>
@@ -147,11 +148,25 @@ static void run(char *s) {
     }
     argv[argc] = NULL;
     const struct shell_command *c = find_command(argv[0]);
-    if (c == NULL) {
+    if (c) {
+        c->run(argc, argv);
+        return;
+    }
+    // A path runs that program; another word runs /bin/<word>, if it exists.
+    bool is_path = false;
+    for (const char *p = argv[0]; *p; p++)
+        if (*p == '/') is_path = true;
+    char path[VFS_PATH_MAX + 1];
+    ksnprintf(path, sizeof path, is_path ? "%s" : "/bin/%s", argv[0]);
+    struct vfs_stat st;
+    if (!is_path && vfs_stat(path, &st) != 0) {
         kprintf("%s: unknown command; `help` lists them\n", argv[0]);
         return;
     }
-    c->run(argc, argv);
+    int status;
+    int err = process_run(path, argv, &status);
+    if (err) kprintf("%s: %s\n", argv[0], strerror(err));
+    else if (status > 0) kprintf("%s: exited with status %d\n", argv[0], status);
 }
 
 static void enter(void) {
@@ -233,6 +248,7 @@ static void cmd_help(int argc, char **argv) {
         kprintf("  %-16s %s\n", name, next->help);
         last = next->name;
     }
+    kprintf("Programs: a path (/bin/echo hi) runs that file; a word that isn't a command runs /bin/<word>.\n");
     kprintf("Keys: Left/Right, Home/End, Backspace/Delete, Up/Down for the history, Ctrl+C drops the line,\n"
             "Ctrl+U deletes to its start, Ctrl+L clears the screen.\n");
 }

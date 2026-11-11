@@ -5,4 +5,8 @@ Everything in the initramfs/ directory of the source tree ends up here.
 module (module_path: in limine.conf), and the kernel unpacks it into the
 tmpfs mounted on / before the shell starts.
 
-Try: ls /, ls /etc, cat /etc/motd, ls /dev, stat /dev/null
+The user programs from user/ (built by `make`) are in /bin, and the kernel
+runs /bin/init at boot.
+
+Try: ls /, ls /etc, cat /etc/motd, ls /dev, stat /dev/null, ls /bin,
+/bin/echo hello
