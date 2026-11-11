@@ -3,7 +3,8 @@
 #   make            build build/myos.iso (boots on UEFI and legacy BIOS)
 #   make run        boot the ISO in QEMU with UEFI firmware
 #   make run-bios   boot the ISO in QEMU with legacy BIOS
-#   make debug      like `run`, but wait for gdb on :1234
+#   make debug      like `run`, but wait for gdb on :1234, and freeze instead of
+#                   resetting or exiting (a triple fault stays there to inspect)
 #   make usb DEV=/dev/diskN   write the ISO to a USB stick (asks first)
 #   make test       boot the ISO headless under UEFI and BIOS (and once with an
 #                   xAPIC-only CPU), check the output and drive the shell;
@@ -72,7 +73,7 @@ RES_Y = $(word 2,$(subst x, ,$(RES)))
 
 QEMU_COMMON = qemu-system-x86_64 -M q35 -m 512M -cpu max -smp 4 \
 	-vga none -device VGA,xres=$(RES_X),yres=$(RES_Y),vgamem_mb=32 \
-	-serial stdio -no-reboot -no-shutdown
+	-serial stdio
 
 .PHONY: all kernel run run-bios debug usb test test-crash crash-test compdb clean FORCE
 
@@ -129,7 +130,8 @@ run-bios: $(ISO)
 	$(QEMU_COMMON) -cdrom $(ISO)
 
 debug: $(ISO)
-	$(QEMU_COMMON) -drive if=pflash,unit=0,format=raw,readonly=on,file=$(OVMF) -cdrom $(ISO) -s -S
+	$(QEMU_COMMON) -drive if=pflash,unit=0,format=raw,readonly=on,file=$(OVMF) -cdrom $(ISO) -s -S \
+	   -no-reboot -no-shutdown
 
 usb: $(ISO)
 	@scripts/write-usb.sh "$(DEV)" "$(ISO)"
