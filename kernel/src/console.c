@@ -407,8 +407,7 @@ static void control(uint8_t c) {
     case '\r':
         con.cx = 0;
         break;
-    case '\b':
-        if (con.cx >= con.cols) con.cx = con.cols - 1;
+    case '\b': // from the pending-wrap position too, so "\b \b" erases the last column
         if (con.cx > 0) con.cx--;
         break;
     case '\t':
