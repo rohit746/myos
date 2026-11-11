@@ -12,6 +12,7 @@
 #include <memory.h>
 #include <pmm.h>
 #include <serial.h>
+#include <shell.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -178,63 +179,10 @@ static void print_date(int64_t unix_s) {
     kprintf("%04d-%02d-%02d %02d:%02d:%02d UTC", d.year, d.month, d.day, d.hour, d.minute, d.second);
 }
 
-// The idle loop's status line: uptime, date, and what has been typed on it.
-#define TYPED_MAX 48
-
-static char typed[TYPED_MAX + 1];
-static size_t typed_len;
-
-static void draw_status_line(bool keyboard) {
-    uint64_t s = clock_monotonic_ns() / NS_PER_SEC;
-    int64_t now;
-    kprintf("\r  uptime %lu:%02lu:%02lu", s / 3600, s / 60 % 60, s % 60);
-    if (clock_realtime_ns(&now)) {
-        kprintf("   ");
-        print_date(now / (int64_t)NS_PER_SEC);
-    }
-    if (keyboard) kprintf("   > %s", typed);
-}
-
-// Echo a key onto the status line. Enter keeps the line and starts a new one.
-static void type_key(const struct key_event *ev) {
-    if (!ev->pressed) return;
-    if (ev->ch == '\n') {
-        draw_status_line(true);
-        kprintf("\n");
-        typed_len = 0;
-        typed[0] = '\0';
-        draw_status_line(true);
-    } else if (ev->ch == '\b') {
-        if (typed_len == 0) return;
-        typed[--typed_len] = '\0';
-        kprintf("\b \b");
-    } else if (ev->ch >= ' ' && ev->ch <= '~' && typed_len < TYPED_MAX) {
-        typed[typed_len++] = ev->ch;
-        typed[typed_len] = '\0';
-        kprintf("%c", ev->ch);
-    }
-}
-
 static void print_cpu(void) {
-    uint32_t a, b, c, d;
-    char vendor[13];
-    cpuid(0, 0, &a, &b, &c, &d);
-    memcpy(vendor + 0, &b, 4);
-    memcpy(vendor + 4, &d, 4);
-    memcpy(vendor + 8, &c, 4);
-    vendor[12] = '\0';
-
-    char brand[49] = "unknown";
-    cpuid(0x80000000, 0, &a, &b, &c, &d);
-    if (a >= 0x80000004) {
-        uint32_t *p = (uint32_t *)brand;
-        for (uint32_t leaf = 0x80000002; leaf <= 0x80000004; leaf++, p += 4)
-            cpuid(leaf, 0, &p[0], &p[1], &p[2], &p[3]);
-        brand[48] = '\0';
-    }
-    const char *name = brand;
-    while (*name == ' ') name++;
-    kprintf("  cpu:    %s (%s)\n", name, vendor);
+    struct cpu_ident id;
+    cpu_identify(&id);
+    kprintf("  cpu:    %s (%s)\n", id.brand, id.vendor);
 }
 
 static void print_memory_map(void) {
@@ -416,23 +364,11 @@ void kmain(void) {
     if (!(read_rflags() & RFLAGS_IF)) panic("interrupts were turned off during boot");
 
     kprintf("\n");
-    if (keyboard)
-        kprintf(ANSI_YELLOW "  Kernel is up. Type something; Enter starts a new line." ANSI_RESET "\n\n");
-    else
-        kprintf(ANSI_YELLOW "  Kernel is up. No keyboard, so this CPU is going to sleep." ANSI_RESET "\n\n");
-
-    // Sleep with interrupts on, so IRQs still get handled. The tick wakes
-    // the CPU every millisecond; echo any keys, and once a second redraw
-    // the status line.
-    uint64_t shown = UINT64_MAX;
-    for (;;) {
-        struct key_event ev;
-        while (keyboard_read(&ev)) type_key(&ev);
-        uint64_t s = clock_monotonic_ns() / NS_PER_SEC;
-        if (s != shown) {
-            shown = s;
-            draw_status_line(keyboard);
-        }
-        hlt();
+    if (keyboard) {
+        kprintf(ANSI_YELLOW "  Kernel is up. Type help for a list of commands." ANSI_RESET "\n\n");
+        shell_run();
     }
+    kprintf(ANSI_YELLOW "  Kernel is up. No keyboard, so this CPU is going to sleep." ANSI_RESET "\n\n");
+    // Sleep with interrupts on, so IRQs still get handled.
+    for (;;) hlt();
 }

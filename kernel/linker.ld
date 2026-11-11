@@ -37,6 +37,12 @@ SECTIONS
     rodata_start = .;
     .rodata : {
         *(.rodata .rodata.*)
+
+        /* The shell's command table: every SHELL_COMMAND (shell.h). */
+        . = ALIGN(8);
+        shell_commands_start = .;
+        KEEP(*(.shell_commands))
+        shell_commands_end = .;
     } :rodata
     rodata_end = .;
 

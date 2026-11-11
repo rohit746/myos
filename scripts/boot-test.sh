@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # Boot an ISO in QEMU without a display and check the kernel's serial output.
 #
-#   scripts/boot-test.sh <uefi|bios> <boot|crash> <iso> <logfile>
+#   scripts/boot-test.sh <uefi|bios> <boot|crash|panic|fault> <iso> <logfile>
 #
 #   boot   pass when the kernel reports it's up, ACPI found all the CPUs QEMU
 #          was given, a PIT IRQ came in through the I/O APIC, the timer
 #          tick ran at the calibrated rate and the PS/2 keyboard is ready,
-#          and then keys typed through QEMU's monitor are echoed back right
-#          (Shift, Caps Lock, Num Lock, Backspace, 0xE0 keys), and a
-#          screendump shows the green "[ ok ]" text the escape codes ask
-#          for; fail on any panic, exception or unhandled interrupt, also
-#          shortly after boot while the kernel idles with interrupts on
+#          a screendump shows the green "[ ok ]" text the escape codes ask
+#          for, and then, typing through QEMU's monitor, the shell works:
+#          lines edited with Shift, Caps Lock, Num Lock, Backspace, Delete,
+#          Left/Right, Home/End and the history (Up/Down) are echoed right,
+#          every command prints what it should, `clear` blanks the screen
+#          and `reboot` resets the machine (QEMU exits: -no-reboot); fail on
+#          any panic, exception or unhandled interrupt
 #   crash  pass when the crash screen for the deliberate page fault appears
+#   panic  pass when the shell's `panic` command panics the kernel
+#   fault  pass when the shell's `panic fault` brings up the crash screen
 #
 # UEFI mode needs the firmware path in $OVMF. Timeout: $BOOT_TIMEOUT (seconds).
 # QEMU's CPU model: $QEMU_CPU (default max; max,-x2apic tests xAPIC mode).
@@ -19,7 +23,7 @@
 set -uo pipefail
 
 mode=${1:?mode: uefi|bios}
-expect=${2:?expect: boot|crash}
+expect=${2:?expect: boot|crash|panic|fault}
 iso=${3:?iso path}
 log=${4:?log path}
 timeout_s=${BOOT_TIMEOUT:-90}
@@ -30,11 +34,28 @@ cpus_marker="cpus:   $smp,"
 irq_marker="IRQ self-test passed"
 timer_marker="timer self-test passed"
 kbd_marker="PS/2 keyboard ready"
-# Keys to type (QEMU sendkey names) and the lines the kernel must echo.
-keys=(shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
-      caps_lock m y shift-o s caps_lock kp_divide num_lock kp_4 kp_2 shift-kp_7 num_lock kp_7 shift-kp_1 kp_enter)
-typed=("Hello, World!" "MYoS/421")
+# Keys to type: QEMU sendkey names, or "=text" for the keys that type text.
+# Each line runs `echo`, so what it prints is what the editing produced.
+keys=("=echo " shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
+      "=echo " caps_lock m y shift-o s caps_lock kp_divide num_lock kp_4 kp_2 shift-kp_7 num_lock kp_7 shift-kp_1
+      kp_enter
+      "=cho rightx" home e end left delete shift-1 ret # echo right!
+      "=echo lft" left left e right right "= ok" ret  # echo left ok
+      up up up up up ret                               # the first line again (Up stops at the oldest)
+      up up up up up up down down ret)                 # echo right! again
+# Lines the shell must print, each "count:text".
+typed=("2:Hello, World!" "1:MYoS/421" "2:right!" "1:left ok")
+# Commands to run, and a line (extended regex) each must print.
+commands=(help uptime mem cpu acpi nope)
+outputs=("^  reboot +restart the machine"
+         "^up [0-9]+:[0-9]{2}:[0-9]{2} \([0-9]+\.[0-9]{3} s, [0-9]+ ticks at 1000 Hz\)"
+         "^physical: [0-9]+ MiB managed"
+         "^cpus: +$smp in the MADT"
+         "^ACPI .*: [0-9]+ tables via the"
+         "^nope: unknown command")
+reboot_marker="Rebooting..."
 crash_marker="CPU EXCEPTION 14: Page fault"
+panic_marker="KERNEL PANIC *** panic command"
 halted_marker="System halted."
 fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PS/2)"
 
@@ -43,7 +64,7 @@ mkdir -p "$(dirname "$log")"
 : > "$log"
 
 monitor="$log.mon"
-rm -f "$monitor"
+rm -f "$monitor" "$log.screen"
 args=(-M q35 -m 512M -cpu "${QEMU_CPU:-max}" -smp "$smp" -vga std -display none -no-reboot
       -serial "file:$log" -monitor "unix:$monitor,server=on,wait=off" -cdrom "$iso")
 if [[ "$mode" == uefi ]]; then
@@ -55,27 +76,40 @@ qemu-system-x86_64 "${args[@]}" 2>"$log.qemu" &
 qemu=$!
 trap 'kill $qemu 2>/dev/null; wait $qemu 2>/dev/null; rm -f "$monitor"' EXIT
 
-# Press keys through the QEMU monitor; each one is held for 100 ms.
+# Press keys through the QEMU monitor; each one is held for 100 ms. An
+# argument "=text" types the text (letters, digits, space and , . / - !).
 send_keys() {
-    python3 -I - "$monitor" "$@" <<'EOF'
+    python3 -I - "$monitor" "$@" <<'PY'
 import socket, sys, time
+names = {" ": "spc", ",": "comma", ".": "dot", "/": "slash", "-": "minus", "!": "shift-1"}
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
-for key in sys.argv[2:]:
-    s.sendall(b"sendkey " + key.encode() + b"\n")
-    time.sleep(0.02)
+for arg in sys.argv[2:]:
+    if arg.startswith("="):
+        keys = [names.get(c) or ("shift-" + c.lower() if c.isupper() else c) for c in arg[1:]]
+    else:
+        keys = [arg]
+    for key in keys:
+        s.sendall(b"sendkey " + key.encode() + b"\n")
+        time.sleep(0.02)
 time.sleep(0.5)
 s.close()
-EOF
+PY
 }
 
 # Take a screendump and check that the console drew the boot log in color:
 # mostly its background, with "[ ok ]" in green (ESC[32m). Raw escape codes,
-# or no colors at all, would leave no green on screen.
+# or no colors at all, would leave no green on screen. With "cleared": the
+# screen must be almost all background, and the green boot log gone.
 check_screen() {
-    python3 -I - "$monitor" "$log.ppm" <<'EOF'
+    python3 -I - "$monitor" "$log.ppm" "${1:-}" <<'PY'
 import socket, sys, time
-mon, out = sys.argv[1:]
+mon, out, mode = sys.argv[1:]
+try:
+    import os
+    os.remove(out)
+except OSError:
+    pass
 s = socket.socket(socket.AF_UNIX)
 s.connect(mon)
 s.sendall(b"screendump " + out.encode() + b"\n")
@@ -95,21 +129,75 @@ s.close()
 px = [pixels[i:i + 3] for i in range(0, len(pixels), 3)]
 bg, green = px.count(bytes([0x10, 0x12, 0x18])), px.count(bytes([0x5f, 0xd7, 0x5f]))
 print(f"screen {w}x{h}: {bg} background pixels, {green} green")
+if mode == "cleared":
+    sys.exit(0 if bg > w * h * 95 // 100 and green == 0 else 1)
 sys.exit(0 if bg > w * h // 2 and green > 500 else 1)
-EOF
+PY
 }
 
-# The kernel redraws the line being typed on, and ends it with \r\n when
-# Enter is pressed (the serial port turns \n into \r\n).
-typed_line() { grep -Eq "> $1"$'\r$' "$log"; }
+# How many lines of the log are exactly $1 (the serial port turns \n into
+# \r\n, and the shell's own line starts with its prompt).
+count_lines() { grep -Fxc "$1"$'\r' "$log"; }
+
+# Type `keys`, then wait until every count:text line in `typed` has been
+# printed exactly that many times.
+check_typing() {
+    send_keys "${keys[@]}" || return 1
+    local i want missing
+    for (( i = 0; i < 40; i++ )); do
+        missing=0
+        for want in "${typed[@]}"; do
+            [[ "$(count_lines "${want#*:}")" == "${want%%:*}" ]] || missing=1
+        done
+        (( missing == 0 )) && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
+# Run each command and wait until it prints its line, then `clear` and
+# `reboot`. Sets `bad` to the command being checked.
+check_commands() {
+    local i j
+    for (( i = 0; i < ${#commands[@]}; i++ )); do
+        bad=${commands[i]}
+        send_keys "=${commands[i]}" ret || return 1
+        for (( j = 0; j < 20; j++ )); do
+            grep -Eq "${outputs[i]}" "$log" && break
+            sleep 0.5
+        done
+        (( j < 20 )) || return 1
+    done
+    bad=clear
+    send_keys =clear ret || return 1
+    check_screen cleared > "$log.screen" 2>&1 || return 1
+    bad=reboot
+    send_keys =reboot ret
+    for (( j = 0; j < 20; j++ )); do
+        if ! kill -0 $qemu 2>/dev/null; then
+            grep -Fq "$reboot_marker" "$log"
+            return
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+# Wait up to 20 s for a fixed string in the log.
+wait_for() {
+    local j
+    for (( j = 0; j < 40; j++ )); do grep -Fq "$1" "$log" && return 0; sleep 0.5; done
+    return 1
+}
 
 result=""
 start=$SECONDS
 while (( SECONDS - start < timeout_s )); do
-    if [[ "$expect" == boot ]]; then
+    if [[ "$expect" != crash ]]; then
         if grep -Eq "$fail_re" "$log"; then result=fail; break; fi
         if grep -Fq "$ok_marker" "$log"; then
-            if ! grep -Fq "$cpus_marker" "$log"; then result=cpus
+            if [[ "$expect" != boot ]]; then result=pass
+            elif ! grep -Fq "$cpus_marker" "$log"; then result=cpus
             elif ! grep -Fq "$irq_marker" "$log"; then result=irq
             elif ! grep -Fq "$timer_marker" "$log"; then result=timer
             elif ! grep -Fq "$kbd_marker" "$log"; then result=kbd
@@ -127,17 +215,20 @@ while (( SECONDS - start < timeout_s )); do
     if ! kill -0 $qemu 2>/dev/null; then result=exited; break; fi
     sleep 0.5
 done
-if [[ "$result" == pass && "$expect" == boot ]]; then
-    result=typing
-    if send_keys "${keys[@]}"; then
-        for (( i = 0; i < 40; i++ )); do
-            missing=0
-            for line in "${typed[@]}"; do typed_line "$line" || missing=1; done
-            if (( missing == 0 )); then result=pass; break; fi
-            sleep 0.5
-        done
-    fi
-    if [[ "$result" == pass ]] && ! check_screen > "$log.screen" 2>&1; then result=screen; fi
+if [[ "$result" == pass ]]; then
+    case "$expect" in
+    boot)
+        if ! check_screen > "$log.screen" 2>&1; then result=screen
+        elif ! check_typing; then result=typing
+        elif ! check_commands; then result=command
+        fi ;;
+    panic)
+        send_keys =panic ret
+        wait_for "$panic_marker" || result=panic ;;
+    fault)
+        send_keys "=panic fault" ret
+        if ! wait_for "$halted_marker" || ! grep -Fq "$crash_marker" "$log"; then result=fault; fi ;;
+    esac
 fi
 sleep 1 # let the last lines reach the log, and any stray interrupt arrive
 if [[ "$result" == pass && "$expect" == boot ]] && grep -Eq "$fail_re" "$log"; then result=fail; fi
@@ -152,8 +243,11 @@ cpus)    echo "FAIL $label ACPI did not report $smp CPUs (\"$cpus_marker\"):" ;;
 irq)     echo "FAIL $label no device IRQ through the I/O APIC (\"$irq_marker\"):" ;;
 timer)   echo "FAIL $label the timer tick did not pass its self-test (\"$timer_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
-typing)  echo "FAIL $label typed keys were not echoed as these lines: ${typed[*]}" ;;
 screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
+typing)  echo "FAIL $label the shell did not print these lines (count:text): ${typed[*]}" ;;
+command) echo "FAIL $label the shell command \`$bad\` did not do what it should $(cat "$log.screen" 2>/dev/null):" ;;
+panic)   echo "FAIL $label the panic command did not panic (\"$panic_marker\"):" ;;
+fault)   echo "FAIL $label \`panic fault\` did not bring up the crash screen (\"$crash_marker\"):" ;;
 exited)  echo "FAIL $label QEMU exited early (triple fault / reset?):" ;;
 *)       echo "FAIL $label no result within ${timeout_s}s:" ;;
 esac
