@@ -50,7 +50,9 @@ built from (`git describe`).
    Pick the USB drive (the "UEFI:" entry if both are listed).
 4. Limine's menu appears for 3 seconds, then the kernel prints its boot log,
    starts `/bin/init`, which starts the shell, `/bin/sh`, and you get a
-   `myos>` prompt. `help` lists the shell's commands.
+   `myos>` prompt. `help` lists the shell's commands. `lspci -n` prints
+   the PCI devices in the same format as Linux's `lspci -n`, so the two can
+   be compared line by line.
 
 Most PCs have no serial port, so on real hardware everything shows on the
 screen. If the machine crashes you get a red crash screen with the
@@ -73,7 +75,9 @@ kernel/src/isr.S        256 interrupt entry stubs
 kernel/src/pmm.c        physical page allocator (bitmap)
 kernel/src/vmm.c        the kernel's own page tables, vmm_map/vmm_unmap
 kernel/src/acpi.c       ACPI tables: CPUs, I/O APICs, IRQ overrides, FADT, HPET, MCFG; \_S5 power off
-kernel/src/apic.c       local APIC (x2APIC when available), I/O APIC, irq_register; 8259 PICs masked
+kernel/src/apic.c       local APIC (x2APIC when available), I/O APIC, irq_register, MSI vectors; 8259 PICs masked
+kernel/src/pci.c        PCI/PCIe: ECAM (or ports 0xcf8/0xcfc), bus scan through bridges, BARs, capabilities, MSI/MSI-X, driver table, lspci
+kernel/src/pci_test.c   PCI self-test: QEMU's edu and igb devices raise an MSI and an MSI-X
 kernel/src/time.c       timer calibration (HPET / PM timer / PIT), 1000 Hz tick, monotonic clock, sleep_ms
 kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1, LEDs
 kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue

@@ -92,6 +92,7 @@ static volatile uint32_t *lapic_regs; // xAPIC mode only
 static struct ioapic ioapics[MAX_IOAPICS];
 static size_t ioapic_count;
 static interrupt_handler_t irq_handlers[ISA_IRQ_COUNT];
+static interrupt_handler_t msi_handlers[MSI_VECTOR_END - MSI_VECTOR_BASE];
 static struct apic_info info;
 
 // ---------------------------------------------------------------------------
@@ -321,6 +322,49 @@ void irq_unregister(uint8_t isa_irq) {
     // Leave the IDT entry pointing at irq_dispatch, so an IRQ already on
     // its way still gets its EOI.
     irq_handlers[isa_irq] = NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Message-signalled interrupts
+// ---------------------------------------------------------------------------
+
+// The MSI address: 0xfee in bits 20-31, the destination APIC ID in bits
+// 12-19, and redirection hint and destination mode 0 (this exact CPU, by
+// physical ID). The data: the vector, with fixed delivery and edge trigger.
+#define MSI_ADDRESS_BASE 0xfee00000u
+#define MSI_DEST_SHIFT   12
+
+static void msi_dispatch(struct interrupt_frame *f) {
+    interrupt_handler_t h = msi_handlers[f->vector - MSI_VECTOR_BASE];
+    if (h) h(f);
+    lapic_eoi();
+}
+
+bool msi_vector_alloc(interrupt_handler_t handler, struct msi_message *msg) {
+    if (handler == NULL) panic("msi_vector_alloc: no handler");
+    uint32_t dest = lapic_id();
+    if (dest > 0xff) return false;
+    uint64_t flags = read_rflags();
+    cli();
+    for (unsigned v = MSI_VECTOR_BASE; v < MSI_VECTOR_END; v++) {
+        if (msi_handlers[v - MSI_VECTOR_BASE]) continue;
+        msi_handlers[v - MSI_VECTOR_BASE] = handler;
+        idt_set_handler(v, msi_dispatch);
+        if (flags & RFLAGS_IF) sti();
+        *msg = (struct msi_message){
+            .vector = v, .address = MSI_ADDRESS_BASE | dest << MSI_DEST_SHIFT, .data = v};
+        return true;
+    }
+    if (flags & RFLAGS_IF) sti();
+    return false;
+}
+
+void msi_vector_free(uint8_t vector) {
+    if (vector < MSI_VECTOR_BASE || vector >= MSI_VECTOR_END || !msi_handlers[vector - MSI_VECTOR_BASE])
+        panic("msi_vector_free: vector %u was not allocated", vector);
+    // Like irq_unregister, leave the IDT entry, so a message already on its
+    // way still gets its EOI.
+    msi_handlers[vector - MSI_VECTOR_BASE] = NULL;
 }
 
 // ---------------------------------------------------------------------------

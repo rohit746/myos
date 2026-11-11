@@ -128,6 +128,7 @@ char *strerror(int err) {
     case EFAULT: return "Bad address";
     case EBUSY: return "Device or resource busy";
     case EEXIST: return "File exists";
+    case ENODEV: return "No such device";
     case ENOTDIR: return "Not a directory";
     case EISDIR: return "Is a directory";
     case EINVAL: return "Invalid argument";
