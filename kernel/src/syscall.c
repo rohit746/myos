@@ -130,7 +130,9 @@ static int64_t sys_nanosleep(uint64_t req, uint64_t rem) {
     if (copy_from_user(&ts, req, sizeof ts)) return -EFAULT;
     if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= (int64_t)NS_PER_SEC) return -EINVAL;
     // Whole milliseconds, rounded up: never shorter than asked. Nothing
-    // interrupts a sleep yet, so `rem` is never written.
+    // interrupts a sleep yet, so `rem` is never written. Over a century is
+    // as good as forever, and keeps the arithmetic from overflowing.
+    if (ts.tv_sec > 100ll * 365 * 24 * 3600) ts.tv_sec = 100ll * 365 * 24 * 3600;
     uint64_t ms = (uint64_t)ts.tv_sec * 1000 + ((uint64_t)ts.tv_nsec + NS_PER_MS - 1) / NS_PER_MS;
     thread_sleep(ms);
     return 0;
