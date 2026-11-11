@@ -9,7 +9,9 @@
 #          that never yield, threads contending on locks got exact counts
 #          (and the lock debug checks fired), the VFS passed its self-test
 #          and the initramfs was unpacked into /, user programs passed their
-#          self-test in ring 3, and the PS/2 keyboard is ready,
+#          self-test in ring 3, /bin/init was loaded from the initramfs and
+#          its libc self-test passed (it printed so, and exited with status
+#          0), and the PS/2 keyboard is ready,
 #          a screendump shows the green "[ ok ]" text the escape codes ask
 #          for, and then, typing through QEMU's monitor, the shell works:
 #          lines edited with Shift, Caps Lock, Num Lock, Backspace, Delete,
@@ -17,7 +19,8 @@
 #          every command prints what it should (`ls` and `cat` show files
 #          from the initramfs; `user hello` prints from ring 3, `user kread`
 #          gets killed for reading a kernel address and the shell carries
-#          on), `clear` blanks the screen
+#          on; `/bin/echo` and `init` run programs from the initramfs, and
+#          files that aren't programs are refused), `clear` blanks the screen
 #          and `reboot` resets the machine (QEMU exits: -no-reboot); fail on
 #          any panic, exception or unhandled interrupt
 #   power  pass when `reboot` restarts the machine (the kernel boots a second
@@ -50,6 +53,8 @@ vfs_marker="VFS self-test passed"
 initramfs_marker="initramfs: unpacked"
 syscall_marker="system calls via syscall/sysret"
 user_marker="user mode self-test passed"
+init_marker="init: libc self-test passed"
+init_exit_marker="/bin/init exited with status 0"
 kbd_marker="PS/2 keyboard ready"
 # Keys to type: QEMU sendkey names, or "=text" for the keys that type text.
 # Each line runs `echo`, so what it prints is what the editing produced.
@@ -64,7 +69,7 @@ keys=("=echo " shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
 typed=("2:Hello, World!" "1:MYoS/421" "2:right!" "1:left ok")
 # Commands to run, and a line (extended regex) each must print.
 commands=(help uptime mem cpu acpi ps threads "user hello" "user kread" "user priv" "ls /" "ls /etc" "cat /etc/motd" "ls /dev" "stat /dev/null"
-          "mkdir /etc" "cat /nope" nope)
+          "mkdir /etc" "cat /nope" "/bin/echo from ring 3, via libc" init "/etc/motd" "/bin" "/bin/nope" nope)
 outputs=("^  reboot +restart the machine"
          "^up [0-9]+:[0-9]{2}:[0-9]{2} \([0-9]+\.[0-9]{3} s, [0-9]+ ticks at 1000 Hz\)"
          "^physical: [0-9]+ MiB managed"
@@ -82,13 +87,18 @@ outputs=("^  reboot +restart the machine"
          "^/dev/null: character device, 0 bytes, inode [0-9]+ on devfs"
          "^mkdir: /etc: File exists"
          "^cat: /nope: No such file or directory"
+         "^from ring 3, via libc"
+         "^init: hello from init, pid [0-9]+"
+         "^/etc/motd: Exec format error"
+         "^/bin: Permission denied"
+         "^/bin/nope: No such file or directory"
          "^nope: unknown command")
 reboot_marker="Rebooting..."
 poweroff_marker="Powering off..."
 crash_marker="CPU EXCEPTION 14: Page fault"
 panic_marker="KERNEL PANIC *** panic command"
 halted_marker="System halted."
-fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PS/2)"
+fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PS/2|/bin/init)|init: check failed"
 
 [[ -f "$iso" ]] || { echo "boot-test: $iso not found"; exit 2; }
 mkdir -p "$(dirname "$log")"
@@ -261,6 +271,7 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$initramfs_marker" "$log"; then result=initramfs
             elif ! grep -Fq "$syscall_marker" "$log"; then result=syscall
             elif ! grep -Fq "$user_marker" "$log"; then result=user
+            elif ! grep -Fq "$init_marker" "$log" || ! grep -Fq "$init_exit_marker" "$log"; then result=init
             elif ! grep -Fq "$kbd_marker" "$log"; then result=kbd
             else result=pass
             fi
@@ -316,6 +327,7 @@ vfs)     echo "FAIL $label the VFS did not pass its self-test (\"$vfs_marker\"):
 initramfs) echo "FAIL $label the initramfs was not unpacked (\"$initramfs_marker\"):" ;;
 syscall) echo "FAIL $label system calls were not set up (\"$syscall_marker\"):" ;;
 user)    echo "FAIL $label user programs did not pass their self-test (\"$user_marker\"):" ;;
+init)    echo "FAIL $label /bin/init did not pass its self-test (\"$init_marker\", \"$init_exit_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
 screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
 typing)  echo "FAIL $label the shell did not print these lines (count:text): ${typed[*]}" ;;

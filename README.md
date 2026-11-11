@@ -11,6 +11,7 @@ On Linux, install `clang lld qemu-system-x86 ovmf xorriso`.
 
 ```sh
 make            # build/myos.iso
+make user       # just the user programs (user/), into build/user
 make run        # boot in QEMU with UEFI; serial output goes to this terminal
 make run-bios   # boot in QEMU with legacy BIOS
 make debug      # QEMU waits for gdb: gdb build/kernel.elf -ex 'target remote :1234'
@@ -82,7 +83,8 @@ kernel/src/sync.c       spinlocks, wait queues, mutexes, semaphores, condition v
 kernel/src/vfs.c        VFS: vnodes with an operations table, path lookup, mounts, open/read/write/readdir/stat/mkdir
 kernel/src/tmpfs.c      tmpfs: files and directories in RAM (the root filesystem)
 kernel/src/devfs.c      devfs on /dev: console, null, zero
-kernel/src/proc.c       user processes: own address spaces, ring 3, copy_from_user/copy_to_user, killed on a fault
+kernel/src/proc.c       user processes: own address spaces, ring 3, argv/envp/auxv on the stack, copy_from_user/copy_to_user, killed on a fault
+kernel/src/elf.c        ELF64 loader for static executables: PT_LOAD segments with their permissions, .bss zeroed
 kernel/src/syscall.c    syscall/sysret setup, SMEP/SMAP, the system calls (write, mmap, nanosleep, getpid, exit, clock_gettime)
 kernel/src/syscall.S    syscall entry (swapgs, kernel stack) and the first iretq to ring 3
 kernel/src/user_programs.S  built-in ring-3 test programs (`user hello`, `user kread`, ...)
@@ -93,8 +95,14 @@ kernel/src/font.S      embeds the console font (a PSF2 file)
 kernel/src/serial.c     COM1 serial output (QEMU / debugging)
 kernel/src/kprintf.c    printf, snprintf, panic
 kernel/src/klog.c       kernel log: a 64 KiB ring of everything kprintf printed
+user/                   user programs, built as static ELF executables and put in the initramfs's /bin
+user/crt0.S             _start: hands the stack the kernel set up to __libc_start
+user/linker.ld          user memory layout (programs at 0x400000)
+user/libc/              tiny libc: syscall wrappers, printf, string functions, malloc over mmap, getenv, getauxval
+user/bin/init.c         /bin/init, the first program the kernel loads: checks the libc and its startup
+user/bin/echo.c         /bin/echo
 initramfs/              files packed into the initramfs; they show up under / at boot
-scripts/mkinitramfs.py  packs initramfs/ into build/initramfs.tar (USTAR)
+scripts/mkinitramfs.py  packs initramfs/ and the user programs into build/initramfs.tar (USTAR)
 scripts/boot-test.sh    headless QEMU boot test used by `make test` and CI (also types keys and checks a screendump)
 scripts/bdf2psf.py      turns a BDF font into the PSF2 file the console uses
 scripts/write-usb.sh    safely write the ISO to a USB stick

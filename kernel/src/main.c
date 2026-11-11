@@ -5,6 +5,7 @@
 #include <arch.h>
 #include <console.h>
 #include <cpu.h>
+#include <errno.h>
 #include <initramfs.h>
 #include <keyboard.h>
 #include <kheap.h>
@@ -154,6 +155,19 @@ static void irq_self_test(char *line, size_t size) {
 
 static void warn_line(const char *what) {
     kprintf(ANSI_YELLOW "  [warn] %s" ANSI_RESET "\n", what);
+}
+
+// The first program loaded from a file: /bin/init, from the initramfs. It
+// checks the libc and its own startup, prints what it finds and exits.
+static void run_init(char *line, size_t size) {
+    char *argv[] = {"/bin/init", NULL};
+    int status;
+    int err = process_run("/bin/init", argv, &status);
+    if (err) ksnprintf(line, size, "/bin/init: %s", strerror(err));
+    else if (status < 0) ksnprintf(line, size, "/bin/init was killed");
+    else ksnprintf(line, size, "/bin/init exited with status %d", status);
+    if (err == 0 && status == 0) ok(line);
+    else warn_line(line);
 }
 
 // "1234.567 MHz"
@@ -373,6 +387,8 @@ void kmain(void) {
 
     process_self_test(line, sizeof line);
     ok(line);
+
+    run_init(line, sizeof line);
 
     if (have_screen) {
         struct console_info con = console_get_info();
