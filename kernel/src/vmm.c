@@ -33,7 +33,8 @@
 #define SIZE_2M (2ull << 20)
 #define SIZE_1G (1ull << 30)
 
-#define MSR_EFER  0xc0000080
+#define KERNEL_HALF 256 // first PML4 entry of the kernel half
+
 #define EFER_NXE  (1ull << 11)
 #define MSR_PAT   0x277
 #define CR0_WP    (1ull << 16)
@@ -147,7 +148,63 @@ void vmm_unmap(struct vmm_space *s, uint64_t virt) {
     if (e == NULL || !(*e & PTE_PRESENT)) panic("vmm_unmap: %p is not mapped", (void *)virt);
     *e = 0;
     stats.pages_4k--;
-    if (is_active(s)) invlpg(virt);
+    // Kernel mappings are in every space, whichever one is loaded.
+    if (is_active(s) || s == &kernel_space) invlpg(virt);
+}
+
+
+bool vmm_space_create(struct vmm_space *s) {
+    uint64_t phys = pmm_alloc_page();
+    if (phys == 0) return false;
+    stats.table_pages++;
+    uint64_t *pml4 = phys_to_virt(phys);
+    uint64_t *kernel = phys_to_virt(kernel_space.pml4);
+    memset(pml4, 0, KERNEL_HALF * sizeof *pml4);
+    memcpy(pml4 + KERNEL_HALF, kernel + KERNEL_HALF, (512 - KERNEL_HALF) * sizeof *pml4);
+    s->pml4 = phys;
+    return true;
+}
+
+// Free the table at `phys` (a level-`level` table of the lower half) and
+// everything under it.
+static void free_tree(uint64_t phys, int level) {
+    uint64_t *table = phys_to_virt(phys);
+    for (int i = 0; i < 512; i++) {
+        uint64_t e = table[i];
+        if (!(e & PTE_PRESENT)) continue;
+        if (level > 1 && (e & PTE_HUGE)) panic("vmm: large page in a user address space");
+        if (level > 1) {
+            free_tree(e & PTE_ADDR, level - 1);
+        } else {
+            pmm_free_page(e & PTE_ADDR);
+            stats.pages_4k--;
+        }
+    }
+    pmm_free_page(phys);
+    stats.table_pages--;
+}
+
+void vmm_space_destroy(struct vmm_space *s) {
+    if (s == &kernel_space) panic("vmm_space_destroy: the kernel's space");
+    if (is_active(s)) panic("vmm_space_destroy: the space is in use");
+    uint64_t *pml4 = phys_to_virt(s->pml4);
+    for (int i = 0; i < KERNEL_HALF; i++)
+        if (pml4[i] & PTE_PRESENT) free_tree(pml4[i] & PTE_ADDR, 3);
+    pmm_free_page(s->pml4);
+    stats.table_pages--;
+    s->pml4 = 0;
+}
+
+bool vmm_user_accessible(struct vmm_space *s, uint64_t virt, bool write) {
+    uint64_t need = PTE_PRESENT | PTE_USER | (write ? PTE_WRITE : 0);
+    uint64_t *table = phys_to_virt(s->pml4);
+    for (int level = 4; level >= 1; level--) {
+        uint64_t e = table[pt_index(virt, level)];
+        if ((e & need) != need) return false;
+        if (level == 1 || (e & PTE_HUGE)) return true;
+        table = phys_to_virt(e & PTE_ADDR);
+    }
+    return false;
 }
 
 static uint64_t mmio_next = VMM_MMIO_BASE;
@@ -273,6 +330,13 @@ void vmm_init(struct limine_memmap_response *mm, uint64_t kernel_phys, uint64_t 
     map_kernel_section(rodata_start, rodata_end, 0);
     map_kernel_section(data_start, data_end, VMM_WRITE);
     map_hhdm(mm);
+
+    // Give every kernel-half PML4 entry a table now, so that user address
+    // spaces can share them all (vmm_space_create) and a kernel mapping
+    // made later, under any of them, lands in tables every space has.
+    uint64_t *pml4 = phys_to_virt(kernel_space.pml4);
+    for (int i = KERNEL_HALF; i < 512; i++)
+        if (!(pml4[i] & PTE_PRESENT)) pml4[i] = alloc_table() | PTE_PRESENT | PTE_WRITE;
 
     // Limine turns WP on; make sure it stays on so the kernel itself faults
     // when it writes to a read-only page.

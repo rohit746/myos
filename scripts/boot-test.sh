@@ -8,13 +8,16 @@
 #          tick ran at the calibrated rate, the scheduler preempted threads
 #          that never yield, threads contending on locks got exact counts
 #          (and the lock debug checks fired), the VFS passed its self-test
-#          and the initramfs was unpacked into /, and the PS/2 keyboard is ready,
+#          and the initramfs was unpacked into /, user programs passed their
+#          self-test in ring 3, and the PS/2 keyboard is ready,
 #          a screendump shows the green "[ ok ]" text the escape codes ask
 #          for, and then, typing through QEMU's monitor, the shell works:
 #          lines edited with Shift, Caps Lock, Num Lock, Backspace, Delete,
 #          Left/Right, Home/End and the history (Up/Down) are echoed right,
 #          every command prints what it should (`ls` and `cat` show files
-#          from the initramfs), `clear` blanks the screen
+#          from the initramfs; `user hello` prints from ring 3, `user kread`
+#          gets killed for reading a kernel address and the shell carries
+#          on), `clear` blanks the screen
 #          and `reboot` resets the machine (QEMU exits: -no-reboot); fail on
 #          any panic, exception or unhandled interrupt
 #   power  pass when `reboot` restarts the machine (the kernel boots a second
@@ -45,6 +48,8 @@ sched_marker="scheduler self-test passed"
 sync_marker="sync self-test passed"
 vfs_marker="VFS self-test passed"
 initramfs_marker="initramfs: unpacked"
+syscall_marker="system calls via syscall/sysret"
+user_marker="user mode self-test passed"
 kbd_marker="PS/2 keyboard ready"
 # Keys to type: QEMU sendkey names, or "=text" for the keys that type text.
 # Each line runs `echo`, so what it prints is what the editing produced.
@@ -58,7 +63,7 @@ keys=("=echo " shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
 # Lines the shell must print, each "count:text".
 typed=("2:Hello, World!" "1:MYoS/421" "2:right!" "1:left ok")
 # Commands to run, and a line (extended regex) each must print.
-commands=(help uptime mem cpu acpi ps threads "ls /" "ls /etc" "cat /etc/motd" "ls /dev" "stat /dev/null"
+commands=(help uptime mem cpu acpi ps threads "user hello" "user kread" "user priv" "ls /" "ls /etc" "cat /etc/motd" "ls /dev" "stat /dev/null"
           "mkdir /etc" "cat /nope" nope)
 outputs=("^  reboot +restart the machine"
          "^up [0-9]+:[0-9]{2}:[0-9]{2} \([0-9]+\.[0-9]{3} s, [0-9]+ ticks at 1000 Hz\)"
@@ -67,6 +72,9 @@ outputs=("^  reboot +restart the machine"
          "^ACPI .*: [0-9]+ tables via the"
          "^ +[0-9]+ +running +[0-9]+ +[0-9]+ +main"
          "^threads: 4 threads ran and exited"
+         "^process [0-9]+ \(hello\) exited with status 0"
+         "^process [0-9]+ \(kread\) killed: page fault at 0xffffffff80000000 \(read, protection violation\)"
+         "^process [0-9]+ \(priv\) killed: General protection fault \(exception 13"
          "^d +etc/"
          "^- +[0-9]+  motd"
          "^Welcome to myos!"
@@ -251,6 +259,8 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$sync_marker" "$log"; then result=sync
             elif ! grep -Fq "$vfs_marker" "$log"; then result=vfs
             elif ! grep -Fq "$initramfs_marker" "$log"; then result=initramfs
+            elif ! grep -Fq "$syscall_marker" "$log"; then result=syscall
+            elif ! grep -Fq "$user_marker" "$log"; then result=user
             elif ! grep -Fq "$kbd_marker" "$log"; then result=kbd
             else result=pass
             fi
@@ -304,6 +314,8 @@ sched)   echo "FAIL $label the scheduler did not pass its self-test (\"$sched_ma
 sync)    echo "FAIL $label the locks did not pass their self-test (\"$sync_marker\"):" ;;
 vfs)     echo "FAIL $label the VFS did not pass its self-test (\"$vfs_marker\"):" ;;
 initramfs) echo "FAIL $label the initramfs was not unpacked (\"$initramfs_marker\"):" ;;
+syscall) echo "FAIL $label system calls were not set up (\"$syscall_marker\"):" ;;
+user)    echo "FAIL $label user programs did not pass their self-test (\"$user_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
 screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
 typing)  echo "FAIL $label the shell did not print these lines (count:text): ${typed[*]}" ;;

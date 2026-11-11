@@ -4,6 +4,7 @@
 #include <console.h>
 #include <cpu.h>
 #include <kprintf.h>
+#include <proc.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -65,6 +66,8 @@ void idt_set_handler(uint8_t vector, interrupt_handler_t handler) {
     handlers[vector] = handler;
 }
 
+const char *exception_name(uint64_t vector) { return vector < 32 ? exception_names[vector] : "Interrupt"; }
+
 // Walk the chain of saved frame pointers (the kernel is built with
 // -fno-omit-frame-pointer) and print return addresses.
 static void backtrace(uint64_t rbp) {
@@ -106,6 +109,11 @@ static void __attribute__((noreturn)) exception_panic(struct interrupt_frame *f)
 
 // Called from isr_common in isr.S for every interrupt and exception.
 void isr_dispatch(struct interrupt_frame *f) {
+    // An exception in user code is the process's problem, not the kernel's:
+    // it gets killed. NMIs, double faults and machine checks are about the
+    // machine, whatever was running.
+    if (f->vector < 32 && (f->cs & 3) && f->vector != 2 && f->vector != 8 && f->vector != 18)
+        process_fault(f);
     if (handlers[f->vector]) {
         handlers[f->vector](f);
         return;

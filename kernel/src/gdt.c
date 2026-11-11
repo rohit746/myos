@@ -6,6 +6,8 @@
 //     (rsp0 when coming from user mode, IST entries for critical faults)
 
 #include <arch.h>
+#include <cpu.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct tss {
@@ -25,11 +27,18 @@ struct gdtr {
 
 static uint64_t gdt[7];
 static struct tss tss;
+static struct cpu_local cpu_local; // the only CPU's, until SMP
+
+_Static_assert(offsetof(struct cpu_local, kernel_rsp) == CPU_LOCAL_KERNEL_RSP, "isr.S and syscall.S use it");
+_Static_assert(offsetof(struct cpu_local, user_rsp) == CPU_LOCAL_USER_RSP, "syscall.S uses it");
 
 static uint8_t kernel_int_stack[16384] __attribute__((aligned(16)));
 static uint8_t double_fault_stack[16384] __attribute__((aligned(16)));
 
-void tss_set_rsp0(uint64_t rsp0) { tss.rsp[0] = rsp0; }
+void tss_set_rsp0(uint64_t rsp0) {
+    tss.rsp[0] = rsp0;
+    cpu_local.kernel_rsp = rsp0;
+}
 uint64_t tss_get_rsp0(void) { return tss.rsp[0]; }
 
 void gdt_init(void) {
@@ -39,7 +48,7 @@ void gdt_init(void) {
     gdt[3] = 0x00cff2000000ffff; // 0x18 user data:   present, ring 3, writable
     gdt[4] = 0x00affa000000ffff; // 0x20 user code:   present, ring 3, executable, 64-bit
 
-    tss.rsp[0] = (uint64_t)(kernel_int_stack + sizeof kernel_int_stack);
+    tss_set_rsp0((uint64_t)(kernel_int_stack + sizeof kernel_int_stack));
     tss.ist[IST_DOUBLE_FAULT - 1] = (uint64_t)(double_fault_stack + sizeof double_fault_stack);
     tss.iopb_offset = sizeof tss; // no I/O permission bitmap
 
@@ -73,4 +82,10 @@ void gdt_init(void) {
         : "m"(gdtr), [kcode] "i"(GDT_KERNEL_CODE), [kdata] "i"(GDT_KERNEL_DATA),
           [tsssel] "i"(GDT_TSS)
         : "rax", "memory");
+
+    // Loading GS above zeroed its base; point it at this CPU's data (see
+    // struct cpu_local). The kernel runs with this GS base from now on.
+    cpu_local.self = &cpu_local;
+    wrmsr(MSR_GS_BASE, (uint64_t)&cpu_local);
+    wrmsr(MSR_KERNEL_GS_BASE, 0);
 }

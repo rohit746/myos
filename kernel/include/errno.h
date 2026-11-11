@@ -7,6 +7,7 @@
 #define EIO          5
 #define EBADF        9
 #define ENOMEM       12
+#define EFAULT       14
 #define EBUSY        16
 #define EEXIST       17
 #define ENOTDIR      20
@@ -17,6 +18,9 @@
 #define ENOSPC       28
 #define EROFS        30
 #define ENAMETOOLONG 36
+#define ENOSYS       38
 
+#ifndef __ASSEMBLER__
 // A short description: "No such file or directory". `err` may be negated.
 const char *strerror(int err);
+#endif

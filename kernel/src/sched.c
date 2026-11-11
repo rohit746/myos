@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sync.h>
 #include <time.h>
+#include <vmm.h>
 
 #define STACK_CANARY 0x57ac4ca7a12ee5edull // at the bottom of every thread stack
 
@@ -110,6 +111,7 @@ static void schedule(void) {
     next->switches++;
     current = next;
     tss_set_rsp0(next->stack_top);
+    if (read_cr3() != next->cr3) write_cr3(next->cr3);
     switch_context(&prev->rsp, next->rsp);
     finish_switch();
 }
@@ -135,6 +137,7 @@ static struct thread *thread_alloc(const char *name, void (*entry)(void *), void
     if (n >= THREAD_NAME_MAX) n = THREAD_NAME_MAX - 1;
     memcpy(t->name, name, n);
     t->stack = stack;
+    t->cr3 = kernel_space.pml4;
     *(uint64_t *)stack = STACK_CANARY;
     t->stack_top = ((uint64_t)stack + THREAD_STACK_SIZE) & ~15ull;
 
@@ -165,7 +168,7 @@ static void idle_main(void *arg) {
 
 void sched_init(void) {
     uint64_t flags = irq_save();
-    boot_thread = (struct thread){.state = THREAD_RUNNING, .stack_top = tss_get_rsp0()};
+    boot_thread = (struct thread){.state = THREAD_RUNNING, .stack_top = tss_get_rsp0(), .cr3 = kernel_space.pml4};
     memcpy(boot_thread.name, "main", 5);
     current = &boot_thread;
     all_threads = &boot_thread;
