@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -44,4 +45,26 @@ size_t strlen(const char *s) {
 int strcmp(const char *a, const char *b) {
     while (*a && *a == *b) a++, b++;
     return (unsigned char)*a - (unsigned char)*b;
+}
+
+const char *strerror(int err) {
+    switch (err < 0 ? -err : err) {
+    case 0: return "Success";
+    case EPERM: return "Operation not permitted";
+    case ENOENT: return "No such file or directory";
+    case EIO: return "Input/output error";
+    case EBADF: return "Bad file descriptor";
+    case ENOMEM: return "Out of memory";
+    case EBUSY: return "Device or resource busy";
+    case EEXIST: return "File exists";
+    case ENOTDIR: return "Not a directory";
+    case EISDIR: return "Is a directory";
+    case EINVAL: return "Invalid argument";
+    case EMFILE: return "Too many open files";
+    case EFBIG: return "File too large";
+    case ENOSPC: return "No space left on device";
+    case EROFS: return "Read-only file system";
+    case ENAMETOOLONG: return "File name too long";
+    default: return "Unknown error";
+    }
 }

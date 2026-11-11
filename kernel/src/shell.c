@@ -10,6 +10,7 @@
 #include <apic.h>
 #include <console.h>
 #include <cpu.h>
+#include <errno.h>
 #include <keyboard.h>
 #include <kheap.h>
 #include <kprintf.h>
@@ -21,6 +22,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <vfs.h>
 #include <vmm.h>
 
 #define PROMPT     ANSI_CYAN "myos>" ANSI_RESET " "
@@ -339,6 +341,112 @@ static void cmd_acpi(int argc, char **argv) {
     kprintf("ACPI %s (OEM %s): %lu tables via the %s\n", acpi->revision >= 2 ? "2.0+" : "1.0", acpi->oem_id,
             acpi->table_count, acpi->xsdt ? "XSDT" : "RSDT");
     acpi_print_summary();
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+static const char *type_name(enum vnode_type t) {
+    return t == VNODE_DIR ? "directory" : t == VNODE_CHARDEV ? "character device" : "file";
+}
+
+// One line of `ls`: "d          etc/", "-       42  motd", "c          null".
+static void ls_line(const char *name, const struct vfs_stat *st) {
+    char size[24] = "";
+    if (st->type == VNODE_FILE) ksnprintf(size, sizeof size, "%lu", st->size);
+    char kind = st->type == VNODE_DIR ? 'd' : st->type == VNODE_CHARDEV ? 'c' : '-';
+    kprintf("%c %10s  %s%s\n", kind, size, name, st->type == VNODE_DIR ? "/" : "");
+}
+
+SHELL_COMMAND(ls, "[path]", "list a directory (/ by default)");
+static void cmd_ls(int argc, char **argv) {
+    if (argc > 2) {
+        kprintf("usage: ls [path]\n");
+        return;
+    }
+    const char *path = argc == 2 ? argv[1] : "/";
+    struct vfs_stat st;
+    int err = vfs_stat(path, &st);
+    if (err == 0 && st.type != VNODE_DIR) {
+        ls_line(path, &st);
+        return;
+    }
+    int fd = err ? err : vfs_open(path, O_RDONLY);
+    if (fd < 0) {
+        kprintf("ls: %s: %s\n", path, strerror(fd));
+        return;
+    }
+    struct vfs_dirent d;
+    while ((err = vfs_readdir(fd, &d)) > 0) {
+        char child[VFS_PATH_MAX + 1];
+        ksnprintf(child, sizeof child, "%s/%s", path, d.name);
+        if (vfs_stat(child, &st) == 0) ls_line(d.name, &st);
+        else kprintf("? %10s  %s\n", "", d.name);
+    }
+    if (err < 0) kprintf("ls: %s: %s\n", path, strerror(err));
+    vfs_close(fd);
+}
+
+// Whether Ctrl+C was pressed since the command started. Other keys typed
+// meanwhile are dropped.
+static bool interrupted(void) {
+    struct key_event ev;
+    bool hit = false;
+    while (keyboard_read(&ev))
+        if (ev.pressed && ev.ch == ('c' & 0x1f)) hit = true;
+    return hit;
+}
+
+SHELL_COMMAND(cat, "<path...>", "print files (Ctrl+C stops)");
+static void cmd_cat(int argc, char **argv) {
+    if (argc < 2) {
+        kprintf("usage: cat <path...>\n");
+        return;
+    }
+    bool stop = false;
+    for (int i = 1; i < argc && !stop; i++) {
+        int fd = vfs_open(argv[i], O_RDONLY);
+        if (fd < 0) {
+            kprintf("cat: %s: %s\n", argv[i], strerror(fd));
+            continue;
+        }
+        char buf[512];
+        int64_t n = 0;
+        while (!stop && (n = vfs_read(fd, buf, sizeof buf)) > 0) {
+            kwrite(buf, (size_t)n);
+            if (interrupted()) {
+                kprintf("^C\n");
+                stop = true;
+            }
+        }
+        if (n < 0) kprintf("cat: %s: %s\n", argv[i], strerror((int)n));
+        vfs_close(fd);
+    }
+}
+
+SHELL_COMMAND(mkdir, "<path...>", "make directories");
+static void cmd_mkdir(int argc, char **argv) {
+    if (argc < 2) kprintf("usage: mkdir <path...>\n");
+    for (int i = 1; i < argc; i++) {
+        int err = vfs_mkdir(argv[i]);
+        if (err) kprintf("mkdir: %s: %s\n", argv[i], strerror(err));
+    }
+}
+
+SHELL_COMMAND(stat, "<path...>", "what a path is: type, size, inode, filesystem");
+static void cmd_stat(int argc, char **argv) {
+    if (argc < 2) kprintf("usage: stat <path...>\n");
+    for (int i = 1; i < argc; i++) {
+        struct vfs_stat st;
+        int err = vfs_stat(argv[i], &st);
+        if (err) {
+            kprintf("stat: %s: %s\n", argv[i], strerror(err));
+            continue;
+        }
+        kprintf("%s: %s, %lu %s, inode %lu on %s\n", argv[i], type_name(st.type), st.size,
+                st.type == VNODE_DIR ? "entries" : "bytes", st.ino, st.fs);
+    }
 }
 
 // Give a reset method time to work before trying the next one.
