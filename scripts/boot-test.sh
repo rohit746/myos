@@ -6,7 +6,8 @@
 #   boot   pass when the kernel reports it's up, ACPI found all the CPUs QEMU
 #          was given, a PIT IRQ came in through the I/O APIC, the timer
 #          tick ran at the calibrated rate, the scheduler preempted threads
-#          that never yield, and the PS/2 keyboard is ready,
+#          that never yield, threads contending on locks got exact counts
+#          (and the lock debug checks fired), and the PS/2 keyboard is ready,
 #          a screendump shows the green "[ ok ]" text the escape codes ask
 #          for, and then, typing through QEMU's monitor, the shell works:
 #          lines edited with Shift, Caps Lock, Num Lock, Backspace, Delete,
@@ -39,6 +40,7 @@ cpus_marker="cpus:   $smp,"
 irq_marker="IRQ self-test passed"
 timer_marker="timer self-test passed"
 sched_marker="scheduler self-test passed"
+sync_marker="sync self-test passed"
 kbd_marker="PS/2 keyboard ready"
 # Keys to type: QEMU sendkey names, or "=text" for the keys that type text.
 # Each line runs `echo`, so what it prints is what the editing produced.
@@ -234,6 +236,7 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$irq_marker" "$log"; then result=irq
             elif ! grep -Fq "$timer_marker" "$log"; then result=timer
             elif ! grep -Fq "$sched_marker" "$log"; then result=sched
+            elif ! grep -Fq "$sync_marker" "$log"; then result=sync
             elif ! grep -Fq "$kbd_marker" "$log"; then result=kbd
             else result=pass
             fi
@@ -284,6 +287,7 @@ cpus)    echo "FAIL $label ACPI did not report $smp CPUs (\"$cpus_marker\"):" ;;
 irq)     echo "FAIL $label no device IRQ through the I/O APIC (\"$irq_marker\"):" ;;
 timer)   echo "FAIL $label the timer tick did not pass its self-test (\"$timer_marker\"):" ;;
 sched)   echo "FAIL $label the scheduler did not pass its self-test (\"$sched_marker\"):" ;;
+sync)    echo "FAIL $label the locks did not pass their self-test (\"$sync_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
 screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
 typing)  echo "FAIL $label the shell did not print these lines (count:text): ${typed[*]}" ;;
