@@ -9,7 +9,7 @@
 #include <vfs.h>
 
 struct file {
-    bool used;
+    unsigned refs; // 0: the slot is free
     int flags;
     struct vnode *vnode;
     uint64_t offset; // in bytes; for a directory, the index of the next entry
@@ -124,7 +124,7 @@ static int create_in(struct vnode *dir, const char *name, enum vnode_type type, 
 // ---------------------------------------------------------------------------
 
 static struct file *get_file(int fd) {
-    if (fd < 0 || fd >= VFS_MAX_FILES || !files[fd].used) return NULL;
+    if (fd < 0 || fd >= VFS_MAX_FILES || files[fd].refs == 0) return NULL;
     return &files[fd];
 }
 
@@ -166,7 +166,7 @@ static int do_open(const char *path, int flags) {
     if (v->type == VNODE_DIR && mode != O_RDONLY) return -EISDIR;
 
     int fd = 0;
-    while (fd < VFS_MAX_FILES && files[fd].used) fd++;
+    while (fd < VFS_MAX_FILES && files[fd].refs) fd++;
     if (fd == VFS_MAX_FILES) return -EMFILE;
 
     if ((flags & O_TRUNC) && mode != O_RDONLY && v->type == VNODE_FILE) {
@@ -174,7 +174,7 @@ static int do_open(const char *path, int flags) {
         err = v->ops->truncate(v, 0);
         if (err) return err;
     }
-    files[fd] = (struct file){.used = true, .flags = flags, .vnode = v};
+    files[fd] = (struct file){.refs = 1, .flags = flags, .vnode = v};
     return fd;
 }
 
@@ -183,6 +183,22 @@ int vfs_open(const char *path, int flags) {
     int fd = do_open(path, flags);
     mutex_unlock(&vfs_lock);
     return fd;
+}
+
+int vfs_hold(int fd) {
+    mutex_lock(&vfs_lock);
+    struct file *f = get_file(fd);
+    if (f) f->refs++;
+    mutex_unlock(&vfs_lock);
+    return f ? 0 : -EBADF;
+}
+
+// The device `fd` is open on for `mode` (O_RDONLY: reading, O_WRONLY:
+// writing), or NULL if it isn't a device, or not open that way.
+static struct vnode *device(int fd, int mode) {
+    struct file *f = get_file(fd);
+    if (f == NULL || f->vnode->type != VNODE_CHARDEV || (f->flags & O_ACCMODE) == (mode ^ 1)) return NULL;
+    return f->vnode;
 }
 
 static int64_t do_read(int fd, void *buf, size_t size) {
@@ -198,6 +214,11 @@ static int64_t do_read(int fd, void *buf, size_t size) {
 
 int64_t vfs_read(int fd, void *buf, size_t size) {
     mutex_lock(&vfs_lock);
+    struct vnode *dev = device(fd, O_RDONLY);
+    if (dev && dev->ops->read) {
+        mutex_unlock(&vfs_lock);
+        return dev->ops->read(dev, 0, buf, size); // may wait: without the lock
+    }
     int64_t n = do_read(fd, buf, size);
     mutex_unlock(&vfs_lock);
     return n;
@@ -215,6 +236,11 @@ static int64_t do_write(int fd, const void *buf, size_t size) {
 
 int64_t vfs_write(int fd, const void *buf, size_t size) {
     mutex_lock(&vfs_lock);
+    struct vnode *dev = device(fd, O_WRONLY);
+    if (dev && dev->ops->write) {
+        mutex_unlock(&vfs_lock);
+        return dev->ops->write(dev, 0, buf, size);
+    }
     int64_t n = do_write(fd, buf, size);
     mutex_unlock(&vfs_lock);
     return n;
@@ -243,7 +269,7 @@ int vfs_readdir(int fd, struct vfs_dirent *out) {
 int vfs_close(int fd) {
     mutex_lock(&vfs_lock);
     struct file *f = get_file(fd);
-    if (f) f->used = false;
+    if (f) f->refs--;
     mutex_unlock(&vfs_lock);
     return f ? 0 : -EBADF;
 }
@@ -310,7 +336,7 @@ void vfs_self_test(char *line, size_t size) {
     root = test_root;
     mutex_unlock(&vfs_lock);
     for (int i = 0; i < VFS_MAX_FILES; i++)
-        if (files[i].used) panic("vfs self-test: file %d is open", i);
+        if (files[i].refs) panic("vfs self-test: file %d is open", i);
 
     // Directories and mounts.
     check(vfs_mkdir("/dev"), 0, "mkdir /dev");
@@ -362,7 +388,12 @@ void vfs_self_test(char *line, size_t size) {
     check(vfs_read(fd, back, 1), 0, "read past the end");
     check(vfs_write(fd, buf, 1), -EBADF, "write to a read-only file");
     check(vfs_readdir(fd, NULL), -ENOTDIR, "readdir on a file");
-    vfs_close(fd);
+    // A second reference keeps it open, with its offset, through a close.
+    check(vfs_hold(fd), 0, "hold");
+    check(vfs_close(fd), 0, "close one of two references");
+    check(vfs_read(fd, back, 1), 0, "read after closing one reference");
+    check(vfs_close(fd), 0, "close the last reference");
+    check(vfs_hold(fd), -EBADF, "hold a closed file");
 
     fd = open_ok("/a/b/f", O_WRONLY | O_TRUNC);
     check(vfs_read(fd, back, 1), -EBADF, "read from a write-only file");
@@ -404,7 +435,10 @@ void vfs_self_test(char *line, size_t size) {
     vfs_close(fd);
     fd = open_ok("/dev/console", O_RDWR);
     check(vfs_write(fd, "", 0), 0, "write nothing to /dev/console");
-    check(vfs_read(fd, back, 1), 0, "read /dev/console");
+    check(vfs_read(fd, back, 0), 0, "read nothing from /dev/console"); // more would wait for a key
+    vfs_close(fd);
+    fd = open_ok("/dev/null", O_WRONLY);
+    check(vfs_read(fd, back, 1), -EBADF, "read a device open write-only");
     vfs_close(fd);
     fd = open_ok("/dev", O_RDONLY);
     int devices = 0;

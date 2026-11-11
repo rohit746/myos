@@ -111,7 +111,7 @@ static void history_move(bool older) {
 // Running commands
 // ---------------------------------------------------------------------------
 
-static const struct shell_command *find_command(const char *name) {
+const struct shell_command *shell_find_command(const char *name) {
     for (const struct shell_command *c = shell_commands_start; c < shell_commands_end; c++)
         if (strcmp(c->name, name) == 0) return c;
     return NULL;
@@ -147,7 +147,7 @@ static void run(char *s) {
         return;
     }
     argv[argc] = NULL;
-    const struct shell_command *c = find_command(argv[0]);
+    const struct shell_command *c = shell_find_command(argv[0]);
     if (c) {
         c->run(argc, argv);
         return;
@@ -248,6 +248,7 @@ static void cmd_help(int argc, char **argv) {
         kprintf("  %-16s %s\n", name, next->help);
         last = next->name;
     }
+    if (process_current()) return; // run by /bin/sh, which explains itself
     kprintf("Programs: a path (/bin/echo hi) runs that file; a word that isn't a command runs /bin/<word>.\n");
     kprintf("Keys: Left/Right, Home/End, Backspace/Delete, Up/Down for the history, Ctrl+C drops the line,\n"
             "Ctrl+U deletes to its start, Ctrl+L clears the screen.\n");

@@ -18,10 +18,16 @@
 // they need no reference counts.
 //
 // Open files live in one table for the whole kernel (VFS_MAX_FILES), and a
-// file descriptor is an index into it. Processes will get their own tables.
+// file number is an index into it. Each process has its own table of file
+// descriptors that point into this one (proc.h); several descriptors, in
+// one process or several, can share an open file and its offset, so an
+// open file counts its references and goes away with the last vfs_close.
 //
 // One mutex covers the VFS and every filesystem in it: these calls may
 // sleep, so not from interrupt handlers, and not holding a spinlock.
+// Devices are read and written without it, so a read can wait (the console
+// waits for keys) without holding up every other file; their vnodes never
+// go away.
 //
 // Errors are negative errno values (errno.h).
 
@@ -96,9 +102,12 @@ void vfs_init(void);
 // Mounting on "/" before there is a root makes the root.
 int vfs_mount(const char *path, struct vnode *root);
 
-// Open a file, directory or device. Returns a file descriptor (>= 0).
-// Directories open only read-only.
+// Open a file, directory or device. Returns a file number (>= 0), with one
+// reference. Directories open only read-only.
 int vfs_open(const char *path, int flags);
+
+// One more reference to an open file: one more vfs_close before it closes.
+int vfs_hold(int fd);
 
 // Read or write at the file's offset, and move it past what was moved.
 int64_t vfs_read(int fd, void *buf, size_t size);
@@ -107,6 +116,7 @@ int64_t vfs_write(int fd, const void *buf, size_t size);
 // The next entry of an open directory: 1, or 0 after the last one.
 int vfs_readdir(int fd, struct vfs_dirent *out);
 
+// Drop a reference; the last one closes the file.
 int vfs_close(int fd);
 int vfs_stat(const char *path, struct vfs_stat *st);
 int vfs_mkdir(const char *path);
@@ -128,6 +138,9 @@ struct vnode *tmpfs_new(void);
 // nothing mounted on it.
 void tmpfs_free(struct vnode *root);
 
-// The devfs root: console (writes go to the screen and serial port, reads
-// get end of file until there is a terminal driver), null and zero.
+// The devfs root: console, null and zero. Writes to the console go to the
+// screen and the serial port. Reads wait for keys and get them raw, the way
+// a terminal sends them: the characters typed (Enter is '\n', Backspace
+// '\b', Ctrl+C 0x03) and ESC [ sequences for the arrows, Home, End and
+// Delete. Nothing is echoed or edited: the shell does that itself.
 struct vnode *devfs_root(void);

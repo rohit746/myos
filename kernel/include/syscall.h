@@ -5,15 +5,26 @@
 // keeps the return address and RFLAGS there); every other register is kept.
 //
 // The numbers, flags and errors are Linux's, so the user programs and libc
-// to come can use what they already know. The #defines are also for
-// assembly (user_programs.S).
+// can use what they already know; the calls Linux doesn't have are numbered
+// from 500. The #defines are also for assembly (user_programs.S).
 
-#define SYS_write         1  // write(fd, buf, len): fd 1 and 2 are the console
+#define SYS_read          0  // read(fd, buf, len): the console waits for a key, then gives what was typed
+#define SYS_write         1  // write(fd, buf, len)
+#define SYS_open          2  // open(path, flags, mode): O_RDONLY/O_WRONLY/O_RDWR, O_CREAT, O_TRUNC (vfs.h); mode is ignored
+#define SYS_close         3  // close(fd)
 #define SYS_mmap          9  // mmap(addr, len, prot, flags, fd, offset): anonymous memory only
+#define SYS_dup           32 // dup(fd): the lowest free descriptor, on the same open file
+#define SYS_dup2          33 // dup2(fd, newfd): newfd (closed first if open) on the same open file
 #define SYS_nanosleep     35 // nanosleep(const struct timespec *req, struct timespec *rem)
 #define SYS_getpid        39 // getpid()
 #define SYS_exit          60 // exit(status): ends the process
+#define SYS_wait4         61 // wait4(pid, int *status, options, rusage): waitpid (proc.h); rusage must be NULL
+#define SYS_getppid       110 // getppid(): 0 for a process the kernel started
 #define SYS_clock_gettime 228 // clock_gettime(clock, struct timespec *ts)
+
+// myos's own.
+#define SYS_spawn          500 // spawn(path, argv, envp): run a program as a child (process_spawn); its pid
+#define SYS_kernel_command 501 // kernel_command(argv): run a command of the kernel shell (shell.h); -ENOENT if none has that name
 
 // mmap
 #define PROT_NONE     0

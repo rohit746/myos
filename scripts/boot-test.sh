@@ -9,20 +9,22 @@
 #          that never yield, threads contending on locks got exact counts
 #          (and the lock debug checks fired), the VFS passed its self-test
 #          and the initramfs was unpacked into /, user programs passed their
-#          self-test in ring 3, /bin/init was loaded from the initramfs and
-#          its libc self-test passed (it printed so, and exited with status
-#          0), and the PS/2 keyboard is ready,
+#          self-test in ring 3, the PS/2 keyboard is ready, and /bin/init
+#          was loaded from the initramfs, passed its libc self-test (files,
+#          child processes, ...) and started the user-space shell, /bin/sh;
 #          a screendump shows the green "[ ok ]" text the escape codes ask
 #          for, and then, typing through QEMU's monitor, the shell works:
 #          lines edited with Shift, Caps Lock, Num Lock, Backspace, Delete,
 #          Left/Right, Home/End and the history (Up/Down) are echoed right,
-#          every command prints what it should (`ls` and `cat` show files
-#          from the initramfs; `user hello` prints from ring 3, `user kread`
-#          gets killed for reading a kernel address and the shell carries
-#          on; `/bin/echo` and `init` run programs from the initramfs, and
-#          files that aren't programs are refused), `clear` blanks the screen
-#          and `reboot` resets the machine (QEMU exits: -no-reboot); fail on
-#          any panic, exception or unhandled interrupt
+#          every command prints what it should (kernel commands through the
+#          shell; `ls` and `cat` show files from the initramfs; `user hello`
+#          prints from ring 3, `user kread` gets killed for reading a kernel
+#          address and the shell carries on; programs run as children of
+#          the shell: `/bin/echo` and `init`, `echo ... > file` writes the
+#          file, `crash` gets killed and the shell says so and carries on,
+#          and files that aren't programs are refused), `clear` blanks the
+#          screen and `reboot` resets the machine (QEMU exits: -no-reboot);
+#          fail on any panic, exception or unhandled interrupt
 #   power  pass when `reboot` restarts the machine (the kernel boots a second
 #          time) and `poweroff` then turns it off through ACPI: QEMU exits on
 #          its own, with status 0. QEMU runs without -no-reboot here, so a
@@ -54,7 +56,7 @@ initramfs_marker="initramfs: unpacked"
 syscall_marker="system calls via syscall/sysret"
 user_marker="user mode self-test passed"
 init_marker="init: libc self-test passed"
-init_exit_marker="/bin/init exited with status 0"
+sh_marker="init: started /bin/sh"
 kbd_marker="PS/2 keyboard ready"
 # Keys to type: QEMU sendkey names, or "=text" for the keys that type text.
 # Each line runs `echo`, so what it prints is what the editing produced.
@@ -67,15 +69,17 @@ keys=("=echo " shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
       up up up up up up down down ret)                 # echo right! again
 # Lines the shell must print, each "count:text".
 typed=("2:Hello, World!" "1:MYoS/421" "2:right!" "1:left ok")
-# Commands to run, and a line (extended regex) each must print.
+# Commands to run, and a line (extended regex) each must print ("": nothing
+# to wait for; the shell runs the next command once this one is done).
 commands=(help uptime mem cpu acpi ps threads "user hello" "user kread" "user priv" "ls /" "ls /etc" "cat /etc/motd" "ls /dev" "stat /dev/null"
-          "mkdir /etc" "cat /nope" "/bin/echo from ring 3, via libc" init "/etc/motd" "/bin" "/bin/nope" nope)
+          "mkdir /etc" "cat /nope" "/bin/echo from ring 3, via libc" init "/etc/motd" "/bin" "/bin/nope" nope
+          "echo into a file > /out" "stat /out" "cat /out" crash "echo still here")
 outputs=("^  reboot +restart the machine"
          "^up [0-9]+:[0-9]{2}:[0-9]{2} \([0-9]+\.[0-9]{3} s, [0-9]+ ticks at 1000 Hz\)"
          "^physical: [0-9]+ MiB managed"
          "^cpus: +$smp in the MADT"
          "^ACPI .*: [0-9]+ tables via the"
-         "^ +[0-9]+ +running +[0-9]+ +[0-9]+ +main"
+         "^ +[0-9]+ +running +[0-9]+ +[0-9]+ +sh"
          "^threads: 4 threads ran and exited"
          "^process [0-9]+ \(hello\) exited with status 0"
          "^process [0-9]+ \(kread\) killed: page fault at 0xffffffff80000000 \(read, protection violation\)"
@@ -92,13 +96,18 @@ outputs=("^  reboot +restart the machine"
          "^/etc/motd: Exec format error"
          "^/bin: Permission denied"
          "^/bin/nope: No such file or directory"
-         "^nope: unknown command")
+         "^nope: unknown command"
+         ""
+         "^/out: file, 12 bytes"
+         "^into a file"
+         "^crash: killed by signal 11 \(segmentation fault\)"
+         "^still here")
 reboot_marker="Rebooting..."
 poweroff_marker="Powering off..."
 crash_marker="CPU EXCEPTION 14: Page fault"
 panic_marker="KERNEL PANIC *** panic command"
 halted_marker="System halted."
-fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PS/2|/bin/init)|init: check failed"
+fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PS/2|/bin/init)|init: (check failed|can.t start)"
 
 [[ -f "$iso" ]] || { echo "boot-test: $iso not found"; exit 2; }
 mkdir -p "$(dirname "$log")"
@@ -119,11 +128,11 @@ qemu=$!
 trap 'kill $qemu 2>/dev/null; wait $qemu 2>/dev/null; rm -f "$monitor"' EXIT
 
 # Press keys through the QEMU monitor; each one is held for 100 ms. An
-# argument "=text" types the text (letters, digits, space and , . / - !).
+# argument "=text" types the text (letters, digits, space and , . / - ! >).
 send_keys() {
     python3 -I - "$monitor" "$@" <<'PY'
 import socket, sys, time
-names = {" ": "spc", ",": "comma", ".": "dot", "/": "slash", "-": "minus", "!": "shift-1"}
+names = {" ": "spc", ",": "comma", ".": "dot", "/": "slash", "-": "minus", "!": "shift-1", ">": "shift-dot"}
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
 for arg in sys.argv[2:]:
@@ -271,8 +280,8 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$initramfs_marker" "$log"; then result=initramfs
             elif ! grep -Fq "$syscall_marker" "$log"; then result=syscall
             elif ! grep -Fq "$user_marker" "$log"; then result=user
-            elif ! grep -Fq "$init_marker" "$log" || ! grep -Fq "$init_exit_marker" "$log"; then result=init
             elif ! grep -Fq "$kbd_marker" "$log"; then result=kbd
+            elif ! wait_for "$init_marker" || ! wait_for "$sh_marker"; then result=init
             else result=pass
             fi
             break
@@ -327,7 +336,7 @@ vfs)     echo "FAIL $label the VFS did not pass its self-test (\"$vfs_marker\"):
 initramfs) echo "FAIL $label the initramfs was not unpacked (\"$initramfs_marker\"):" ;;
 syscall) echo "FAIL $label system calls were not set up (\"$syscall_marker\"):" ;;
 user)    echo "FAIL $label user programs did not pass their self-test (\"$user_marker\"):" ;;
-init)    echo "FAIL $label /bin/init did not pass its self-test (\"$init_marker\", \"$init_exit_marker\"):" ;;
+init)    echo "FAIL $label /bin/init did not pass its self-test and start the shell (\"$init_marker\", \"$sh_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
 screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
 typing)  echo "FAIL $label the shell did not print these lines (count:text): ${typed[*]}" ;;
