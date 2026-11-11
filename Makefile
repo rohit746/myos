@@ -46,7 +46,7 @@ CFLAGS := \
 	-Ikernel/include -I$(BUILD)/gen -Ivendor/limine-protocol/include -Ivendor \
 	-MMD -MP $(EXTRA_CFLAGS)
 
-ASFLAGS := --target=$(TARGET) -g -Ikernel/include -MMD -MP
+ASFLAGS := --target=$(TARGET) -g -Ikernel/include -Ivendor -MMD -MP
 
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 	--no-dynamic-linker -T kernel/linker.ld
@@ -78,6 +78,9 @@ $(BUILD)/obj/%.c.o: %.c
 $(BUILD)/obj/%.S.o: %.S
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
+
+# .incbin'd files aren't in the -MMD dependency lists.
+$(BUILD)/obj/kernel/src/font.S.o: vendor/spleen/spleen-8x16.psf
 
 $(KERNEL): $(OBJS) kernel/linker.ld
 	$(LD) $(LDFLAGS) $(OBJS) -o $@

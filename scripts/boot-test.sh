@@ -7,9 +7,10 @@
 #          was given, a PIT IRQ came in through the I/O APIC, the timer
 #          tick ran at the calibrated rate and the PS/2 keyboard is ready,
 #          and then keys typed through QEMU's monitor are echoed back right
-#          (Shift, Caps Lock, Num Lock, Backspace, 0xE0 keys); fail on any
-#          panic, exception or unhandled interrupt, also shortly after boot
-#          while the kernel idles with interrupts on
+#          (Shift, Caps Lock, Num Lock, Backspace, 0xE0 keys), and a
+#          screendump shows the green "[ ok ]" text the escape codes ask
+#          for; fail on any panic, exception or unhandled interrupt, also
+#          shortly after boot while the kernel idles with interrupts on
 #   crash  pass when the crash screen for the deliberate page fault appears
 #
 # UEFI mode needs the firmware path in $OVMF. Timeout: $BOOT_TIMEOUT (seconds).
@@ -68,6 +69,36 @@ s.close()
 EOF
 }
 
+# Take a screendump and check that the console drew the boot log in color:
+# mostly its background, with "[ ok ]" in green (ESC[32m). Raw escape codes,
+# or no colors at all, would leave no green on screen.
+check_screen() {
+    python3 -I - "$monitor" "$log.ppm" <<'EOF'
+import socket, sys, time
+mon, out = sys.argv[1:]
+s = socket.socket(socket.AF_UNIX)
+s.connect(mon)
+s.sendall(b"screendump " + out.encode() + b"\n")
+for _ in range(100):  # QEMU writes a binary PPM: "P6\n<w> <h>\n255\n" + RGB
+    time.sleep(0.1)
+    try:
+        data = open(out, "rb").read()
+        magic, size, maxval, pixels = data.split(b"\n", 3)
+        w, h = map(int, size.split())
+        if len(pixels) == w * h * 3:
+            break
+    except (OSError, ValueError):
+        pass
+else:
+    sys.exit("no screendump")
+s.close()
+px = [pixels[i:i + 3] for i in range(0, len(pixels), 3)]
+bg, green = px.count(bytes([0x10, 0x12, 0x18])), px.count(bytes([0x5f, 0xd7, 0x5f]))
+print(f"screen {w}x{h}: {bg} background pixels, {green} green")
+sys.exit(0 if bg > w * h // 2 and green > 500 else 1)
+EOF
+}
+
 # The kernel redraws the line being typed on, and ends it with \r\n when
 # Enter is pressed (the serial port turns \n into \r\n).
 typed_line() { grep -Eq "> $1"$'\r$' "$log"; }
@@ -106,6 +137,7 @@ if [[ "$result" == pass && "$expect" == boot ]]; then
             sleep 0.5
         done
     fi
+    if [[ "$result" == pass ]] && ! check_screen > "$log.screen" 2>&1; then result=screen; fi
 fi
 sleep 1 # let the last lines reach the log, and any stray interrupt arrive
 if [[ "$result" == pass && "$expect" == boot ]] && grep -Eq "$fail_re" "$log"; then result=fail; fi
@@ -121,6 +153,7 @@ irq)     echo "FAIL $label no device IRQ through the I/O APIC (\"$irq_marker\"):
 timer)   echo "FAIL $label the timer tick did not pass its self-test (\"$timer_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
 typing)  echo "FAIL $label typed keys were not echoed as these lines: ${typed[*]}" ;;
+screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
 exited)  echo "FAIL $label QEMU exited early (triple fault / reset?):" ;;
 *)       echo "FAIL $label no result within ${timeout_s}s:" ;;
 esac

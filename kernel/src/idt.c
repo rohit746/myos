@@ -81,9 +81,7 @@ static void backtrace(uint64_t rbp) {
 
 static void __attribute__((noreturn)) exception_panic(struct interrupt_frame *f) {
     cli();
-    console_set_color(COLOR_WHITE, COLOR_PANIC);
-    kprintf("\n *** CPU EXCEPTION %lu: %s *** \n", f->vector, exception_names[f->vector]);
-    console_set_color(COLOR_WHITE, COLOR_BG);
+    kprintf("\n" ANSI_PANIC " *** CPU EXCEPTION %lu: %s *** " ANSI_RESET "\n", f->vector, exception_names[f->vector]);
 
     kprintf("  error code: 0x%lx\n", f->error_code);
     if (f->vector == 14) {

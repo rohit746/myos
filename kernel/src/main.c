@@ -89,10 +89,7 @@ static void pit_handler(struct interrupt_frame *f) {
 }
 
 static void ok(const char *what) {
-    console_set_color(COLOR_GREEN, COLOR_BG);
-    kprintf("  [ ok ] ");
-    console_set_color(COLOR_WHITE, COLOR_BG);
-    kprintf("%s\n", what);
+    kprintf(ANSI_GREEN "  [ ok ] " ANSI_RESET "%s\n", what);
 }
 
 static const char *memmap_type_name(uint64_t type) {
@@ -136,10 +133,8 @@ static void irq_self_test(char *line, size_t size) {
     uint64_t ticks = pit_ticks;
 
     if (ticks < PIT_TEST_TICKS) {
-        console_set_color(COLOR_YELLOW, COLOR_BG);
-        kprintf("  [warn] IRQ self-test: %lu of %d PIT ticks arrived (IRQ 0 -> GSI %u); no PIT?\n", ticks,
-                PIT_TEST_TICKS, gsi);
-        console_set_color(COLOR_WHITE, COLOR_BG);
+        kprintf(ANSI_YELLOW "  [warn] IRQ self-test: %lu of %d PIT ticks arrived (IRQ 0 -> GSI %u); no PIT?" ANSI_RESET
+                "\n", ticks, PIT_TEST_TICKS, gsi);
         line[0] = '\0';
         return;
     }
@@ -147,9 +142,7 @@ static void irq_self_test(char *line, size_t size) {
 }
 
 static void warn_line(const char *what) {
-    console_set_color(COLOR_YELLOW, COLOR_BG);
-    kprintf("  [warn] %s\n", what);
-    console_set_color(COLOR_WHITE, COLOR_BG);
+    kprintf(ANSI_YELLOW "  [warn] %s" ANSI_RESET "\n", what);
 }
 
 // "1234.567 MHz"
@@ -253,16 +246,18 @@ static void print_memory_map(void) {
     for (uint64_t i = 0; i < mm->entry_count; i++) {
         struct limine_memmap_entry *e = mm->entries[i];
         if (e->type == LIMINE_MEMMAP_USABLE) usable += e->length;
-        console_set_color(e->type == LIMINE_MEMMAP_USABLE ? COLOR_GREEN : COLOR_GREY, COLOR_BG);
-        kprintf("    %016lx - %016lx  %8lu KiB  %s\n", e->base, e->base + e->length,
+        kprintf("%s    %016lx - %016lx  %8lu KiB  %s" ANSI_RESET "\n",
+                e->type == LIMINE_MEMMAP_USABLE ? ANSI_GREEN : ANSI_GREY, e->base, e->base + e->length,
                 e->length / 1024, memmap_type_name(e->type));
     }
-    console_set_color(COLOR_WHITE, COLOR_BG);
     kprintf("  usable RAM: %lu MiB\n", usable / (1024 * 1024));
 }
 
 void kmain(void) {
     serial_init();
+    // Printed before there is a screen: it goes to the serial port and the
+    // kernel log, and the console shows it once it's up.
+    kprintf("\n" ANSI_CYAN "  myos %s" ANSI_RESET "\n\n", MYOS_VERSION);
 
     if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision)) {
         kprintf("myos: bootloader does not support Limine base revision 6\n");
@@ -272,10 +267,6 @@ void kmain(void) {
     struct limine_framebuffer_response *fbr = framebuffer_request.response;
     struct limine_framebuffer *fb = (fbr && fbr->framebuffer_count) ? fbr->framebuffers[0] : NULL;
     bool have_screen = console_init(fb);
-
-    console_set_color(COLOR_CYAN, COLOR_BG);
-    kprintf("\n  myos %s\n\n", MYOS_VERSION);
-    console_set_color(COLOR_WHITE, COLOR_BG);
 
     const char *firmware = "unknown";
     if (firmware_type_request.response) {
@@ -350,6 +341,9 @@ void kmain(void) {
               heap.total_allocs, heap.total_frees, heap.heap_bytes / 1024);
     ok(line);
 
+    if (have_screen && !console_use_shadow_buffer())
+        warn_line("console: no memory for a shadow buffer, drawing straight to the screen");
+
     acpi_init(rsdp_request.response ? rsdp_request.response->address : NULL);
     const struct acpi_info *acpi = acpi_get_info();
     ksnprintf(line, sizeof line, "ACPI %s (OEM %s): %lu tables via the %s", acpi->revision >= 2 ? "2.0+" : "1.0",
@@ -386,6 +380,17 @@ void kmain(void) {
     timer_self_test(line, sizeof line);
     if (line[0]) ok(line);
 
+    if (have_screen) {
+        struct console_info con = console_get_info();
+        uint64_t t0 = clock_monotonic_ns();
+        console_redraw();
+        uint64_t us = (clock_monotonic_ns() - t0) / 1000;
+        ksnprintf(line, sizeof line, "console: %ux%u characters (%ux%u font, scale %u)%s, full redraw in %lu.%03lu ms",
+                  con.cols, con.rows, con.font_w, con.font_h, con.scale, con.shadow ? ", shadow buffer" : "",
+                  us / 1000, us % 1000);
+        ok(line);
+    }
+
     int64_t now;
     if (clock_realtime_ns(&now)) {
         kprintf("  wall clock: ");
@@ -411,12 +416,10 @@ void kmain(void) {
     if (!(read_rflags() & RFLAGS_IF)) panic("interrupts were turned off during boot");
 
     kprintf("\n");
-    console_set_color(COLOR_YELLOW, COLOR_BG);
     if (keyboard)
-        kprintf("  Kernel is up. Type something; Enter starts a new line.\n\n");
+        kprintf(ANSI_YELLOW "  Kernel is up. Type something; Enter starts a new line." ANSI_RESET "\n\n");
     else
-        kprintf("  Kernel is up. No keyboard, so this CPU is going to sleep.\n\n");
-    console_set_color(COLOR_WHITE, COLOR_BG);
+        kprintf(ANSI_YELLOW "  Kernel is up. No keyboard, so this CPU is going to sleep." ANSI_RESET "\n\n");
 
     // Sleep with interrupts on, so IRQs still get handled. The tick wakes
     // the CPU every millisecond; echo any keys, and once a second redraw
