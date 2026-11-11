@@ -11,6 +11,7 @@
 #include <sched.h>
 #include <shell.h>
 #include <string.h>
+#include <sync.h>
 #include <time.h>
 
 #define STACK_CANARY 0x57ac4ca7a12ee5edull // at the bottom of every thread stack
@@ -211,6 +212,7 @@ void thread_sleep(uint64_t ms) {
         sleep_ms(ms);
         return;
     }
+    might_sleep("thread_sleep");
     if (ms == 0) {
         thread_yield();
         return;
@@ -225,6 +227,19 @@ void thread_sleep(uint64_t ms) {
 }
 
 struct thread *thread_current(void) { return current; }
+
+void sched_block(void) {
+    if (read_rflags() & RFLAGS_IF) panic("sched_block: called with interrupts on");
+    current->state = THREAD_BLOCKED;
+    schedule();
+}
+
+void thread_wake(struct thread *t) {
+    uint64_t flags = irq_save();
+    if (t->state != THREAD_BLOCKED) panic("thread_wake: thread %lu (%s) is not blocked", t->id, t->name);
+    enqueue(t);
+    irq_restore(flags);
+}
 
 size_t sched_thread_count(void) { return thread_count; }
 

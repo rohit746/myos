@@ -32,6 +32,9 @@
 #define SCHED_QUANTUM_MS   10
 #define THREAD_STACK_SIZE  (16 * 1024)
 #define THREAD_NAME_MAX    24
+#define THREAD_LOCKS_MAX   8  // locks one thread may hold at once (sync.h)
+
+struct lock_dep;
 
 enum thread_state {
     THREAD_RUNNING, // on the CPU now
@@ -52,6 +55,10 @@ struct thread {
     uint64_t switches;       // times it was put on the CPU
     struct thread *next;     // in the run queue or the sleep list
     struct thread *all_next; // in the list of every thread
+    struct thread *wait_next; // in a wait queue (sync.h)
+    unsigned spins_held;     // spinlocks held: it must not sleep
+    unsigned locks_held;     // entries in `held`
+    const struct lock_dep *held[THREAD_LOCKS_MAX]; // spinlocks and mutexes, oldest first (sync.c)
 };
 
 // Turn the code that is running (kmain, on Limine's stack) into the thread
@@ -75,8 +82,16 @@ void thread_yield(void);
 // timer tick wakes it, so it can sleep up to a tick longer. 0 just yields.
 void thread_sleep(uint64_t ms);
 
-// The thread that is running.
+// The thread that is running. NULL before sched_init().
 struct thread *thread_current(void);
+
+// For wait queues (sync.c). sched_block() takes the running thread off the
+// CPU until thread_wake() makes it ready again; interrupts must be off, and
+// stay off until the caller decides how it sleeps, so no wake-up is missed.
+// thread_wake() is only for a thread blocked in sched_block(), not one in
+// thread_sleep().
+void sched_block(void);
+void thread_wake(struct thread *t);
 
 // Threads that exist (running, ready, blocked, or dead and not freed yet),
 // the idle thread included.
@@ -88,6 +103,7 @@ size_t sched_snapshot(struct thread *out, size_t max);
 
 // Keep other threads off the CPU until the matching preempt_enable().
 // Nests. Interrupts still come in. Fine to call before sched_init().
+// Every spinlock holds this count (sync.h).
 void preempt_disable(void);
 void preempt_enable(void);
 

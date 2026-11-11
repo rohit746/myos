@@ -78,6 +78,7 @@ kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue
 kernel/src/shell.c      kernel shell: line editor, history, command table, built-in commands
 kernel/src/sched.c      kernel threads, round-robin preemptive scheduler, sleep, idle thread
 kernel/src/switch.S     switch_context: swaps kernel stacks between threads
+kernel/src/sync.c       spinlocks, wait queues, mutexes, semaphores, condition variables, lock debug checks
 kernel/src/cpu.c        CPU identification (CPUID)
 kernel/src/console.c    framebuffer text console: 8x16 font, ANSI escape codes, RAM shadow buffer
 kernel/src/font.S      embeds the console font (a PSF2 file)
