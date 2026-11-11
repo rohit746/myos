@@ -1,0 +1,14 @@
+Spleen 8x16, as a PSF2 font
+===========================
+
+spleen-8x16.psf is the console font. It was made from spleen-8x16.bdf in
+Spleen 2.2.0 (https://github.com/fcambus/spleen/releases/tag/2.2.0) with
+
+    scripts/bdf2psf.py spleen-8x16.bdf vendor/spleen/spleen-8x16.psf
+
+which keeps the 191 printable Latin-1 glyphs (U+0020-U+007E, U+00A0-U+00FF)
+and writes a PSF2 file with a Unicode table. Spleen's own .psfu files are
+PSF1. kernel/src/font.S embeds the file in the kernel.
+
+Author: Frederic Cambus
+License: BSD 2-Clause (see LICENSE)

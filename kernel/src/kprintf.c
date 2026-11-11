@@ -1,5 +1,6 @@
 #include <console.h>
 #include <cpu.h>
+#include <klog.h>
 #include <kprintf.h>
 #include <serial.h>
 #include <stdbool.h>
@@ -15,6 +16,7 @@ struct sink {
 };
 
 static void put_out(struct sink *s, char c) {
+    klog_putc(c);
     serial_putc(c);
     console_putc(c);
     s->len++;
@@ -121,6 +123,7 @@ static void format(struct sink *s, const char *fmt, va_list ap) {
 void kvprintf(const char *fmt, va_list ap) {
     struct sink s = {.put = put_out};
     format(&s, fmt, ap);
+    console_flush();
 }
 
 void kprintf(const char *fmt, ...) {
@@ -142,12 +145,11 @@ int ksnprintf(char *buf, size_t size, const char *fmt, ...) {
 
 void panic(const char *fmt, ...) {
     cli();
-    console_set_color(COLOR_WHITE, COLOR_PANIC);
-    kprintf("\n *** KERNEL PANIC *** ");
+    kprintf("\n" ANSI_PANIC " *** KERNEL PANIC *** ");
     va_list ap;
     va_start(ap, fmt);
     kvprintf(fmt, ap);
     va_end(ap);
-    kprintf(" \n");
+    kprintf(" " ANSI_RESET "\n");
     halt_forever();
 }
