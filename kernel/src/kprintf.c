@@ -138,6 +138,14 @@ void kprintf(const char *fmt, ...) {
     va_end(ap);
 }
 
+void kwrite(const char *buf, size_t size) {
+    preempt_disable();
+    struct sink s = {.put = put_out};
+    for (size_t i = 0; i < size; i++) put_out(&s, buf[i]);
+    console_flush();
+    preempt_enable();
+}
+
 int ksnprintf(char *buf, size_t size, const char *fmt, ...) {
     struct sink s = {.put = put_buf, .buf = buf, .size = size};
     va_list ap;

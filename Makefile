@@ -22,6 +22,7 @@ TARGET  := x86_64-unknown-none-elf
 BUILD   := build
 KERNEL  := $(BUILD)/kernel.elf
 ISO     := $(BUILD)/myos.iso
+INITRAMFS := $(BUILD)/initramfs.tar
 LIMINE  := vendor/limine
 
 # Shown on the boot screen: the git tag (v0.2.0), or a commit hash between tags.
@@ -103,14 +104,23 @@ $(BUILD)/obj/kernel/src/font.S.o: vendor/spleen/spleen-8x16.psf
 $(KERNEL): $(OBJS) kernel/linker.ld
 	$(LD) $(LDFLAGS) $(OBJS) -o $@
 
+# The initramfs: everything under initramfs/, as a USTAR archive that Limine
+# loads as a module and the kernel unpacks into / (see limine.conf).
+INITRAMFS_FILES := $(shell find initramfs -type f -o -type d)
+
+$(INITRAMFS): $(INITRAMFS_FILES) scripts/mkinitramfs.py
+	@mkdir -p $(dir $@)
+	python3 -I scripts/mkinitramfs.py initramfs $@
+
 # Host tool that patches the ISO so it also boots on legacy BIOS.
 $(LIMINE)/limine: $(LIMINE)/limine.c
 	$(MAKE) -C $(LIMINE) CC=cc
 
-$(ISO): $(KERNEL) limine.conf $(LIMINE)/limine
+$(ISO): $(KERNEL) $(INITRAMFS) limine.conf $(LIMINE)/limine
 	rm -rf $(BUILD)/iso_root
 	mkdir -p $(BUILD)/iso_root/boot/limine $(BUILD)/iso_root/EFI/BOOT
 	cp $(KERNEL) $(BUILD)/iso_root/boot/kernel.elf
+	cp $(INITRAMFS) $(BUILD)/iso_root/boot/initramfs.tar
 	cp limine.conf $(LIMINE)/limine-bios.sys $(LIMINE)/limine-bios-cd.bin \
 	   $(LIMINE)/limine-uefi-cd.bin $(BUILD)/iso_root/boot/limine/
 	cp $(LIMINE)/BOOTX64.EFI $(LIMINE)/BOOTIA32.EFI $(BUILD)/iso_root/EFI/BOOT/

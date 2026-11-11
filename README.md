@@ -79,12 +79,18 @@ kernel/src/shell.c      kernel shell: line editor, history, command table, built
 kernel/src/sched.c      kernel threads, round-robin preemptive scheduler, sleep, idle thread
 kernel/src/switch.S     switch_context: swaps kernel stacks between threads
 kernel/src/sync.c       spinlocks, wait queues, mutexes, semaphores, condition variables, lock debug checks
+kernel/src/vfs.c        VFS: vnodes with an operations table, path lookup, mounts, open/read/write/readdir/stat/mkdir
+kernel/src/tmpfs.c      tmpfs: files and directories in RAM (the root filesystem)
+kernel/src/devfs.c      devfs on /dev: console, null, zero
+kernel/src/initramfs.c  unpacks the initramfs (a USTAR archive Limine loads as a module) into /
 kernel/src/cpu.c        CPU identification (CPUID)
 kernel/src/console.c    framebuffer text console: 8x16 font, ANSI escape codes, RAM shadow buffer
 kernel/src/font.S      embeds the console font (a PSF2 file)
 kernel/src/serial.c     COM1 serial output (QEMU / debugging)
 kernel/src/kprintf.c    printf, snprintf, panic
 kernel/src/klog.c       kernel log: a 64 KiB ring of everything kprintf printed
+initramfs/              files packed into the initramfs; they show up under / at boot
+scripts/mkinitramfs.py  packs initramfs/ into build/initramfs.tar (USTAR)
 scripts/boot-test.sh    headless QEMU boot test used by `make test` and CI (also types keys and checks a screendump)
 scripts/bdf2psf.py      turns a BDF font into the PSF2 file the console uses
 scripts/write-usb.sh    safely write the ISO to a USB stick

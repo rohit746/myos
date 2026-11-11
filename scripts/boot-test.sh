@@ -7,12 +7,14 @@
 #          was given, a PIT IRQ came in through the I/O APIC, the timer
 #          tick ran at the calibrated rate, the scheduler preempted threads
 #          that never yield, threads contending on locks got exact counts
-#          (and the lock debug checks fired), and the PS/2 keyboard is ready,
+#          (and the lock debug checks fired), the VFS passed its self-test
+#          and the initramfs was unpacked into /, and the PS/2 keyboard is ready,
 #          a screendump shows the green "[ ok ]" text the escape codes ask
 #          for, and then, typing through QEMU's monitor, the shell works:
 #          lines edited with Shift, Caps Lock, Num Lock, Backspace, Delete,
 #          Left/Right, Home/End and the history (Up/Down) are echoed right,
-#          every command prints what it should, `clear` blanks the screen
+#          every command prints what it should (`ls` and `cat` show files
+#          from the initramfs), `clear` blanks the screen
 #          and `reboot` resets the machine (QEMU exits: -no-reboot); fail on
 #          any panic, exception or unhandled interrupt
 #   power  pass when `reboot` restarts the machine (the kernel boots a second
@@ -41,6 +43,8 @@ irq_marker="IRQ self-test passed"
 timer_marker="timer self-test passed"
 sched_marker="scheduler self-test passed"
 sync_marker="sync self-test passed"
+vfs_marker="VFS self-test passed"
+initramfs_marker="initramfs: unpacked"
 kbd_marker="PS/2 keyboard ready"
 # Keys to type: QEMU sendkey names, or "=text" for the keys that type text.
 # Each line runs `echo`, so what it prints is what the editing produced.
@@ -54,7 +58,8 @@ keys=("=echo " shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
 # Lines the shell must print, each "count:text".
 typed=("2:Hello, World!" "1:MYoS/421" "2:right!" "1:left ok")
 # Commands to run, and a line (extended regex) each must print.
-commands=(help uptime mem cpu acpi ps threads nope)
+commands=(help uptime mem cpu acpi ps threads "ls /" "ls /etc" "cat /etc/motd" "ls /dev" "stat /dev/null"
+          "mkdir /etc" "cat /nope" nope)
 outputs=("^  reboot +restart the machine"
          "^up [0-9]+:[0-9]{2}:[0-9]{2} \([0-9]+\.[0-9]{3} s, [0-9]+ ticks at 1000 Hz\)"
          "^physical: [0-9]+ MiB managed"
@@ -62,6 +67,13 @@ outputs=("^  reboot +restart the machine"
          "^ACPI .*: [0-9]+ tables via the"
          "^ +[0-9]+ +running +[0-9]+ +[0-9]+ +main"
          "^threads: 4 threads ran and exited"
+         "^d +etc/"
+         "^- +[0-9]+  motd"
+         "^Welcome to myos!"
+         "^c +null"
+         "^/dev/null: character device, 0 bytes, inode [0-9]+ on devfs"
+         "^mkdir: /etc: File exists"
+         "^cat: /nope: No such file or directory"
          "^nope: unknown command")
 reboot_marker="Rebooting..."
 poweroff_marker="Powering off..."
@@ -237,6 +249,8 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$timer_marker" "$log"; then result=timer
             elif ! grep -Fq "$sched_marker" "$log"; then result=sched
             elif ! grep -Fq "$sync_marker" "$log"; then result=sync
+            elif ! grep -Fq "$vfs_marker" "$log"; then result=vfs
+            elif ! grep -Fq "$initramfs_marker" "$log"; then result=initramfs
             elif ! grep -Fq "$kbd_marker" "$log"; then result=kbd
             else result=pass
             fi
@@ -288,6 +302,8 @@ irq)     echo "FAIL $label no device IRQ through the I/O APIC (\"$irq_marker\"):
 timer)   echo "FAIL $label the timer tick did not pass its self-test (\"$timer_marker\"):" ;;
 sched)   echo "FAIL $label the scheduler did not pass its self-test (\"$sched_marker\"):" ;;
 sync)    echo "FAIL $label the locks did not pass their self-test (\"$sync_marker\"):" ;;
+vfs)     echo "FAIL $label the VFS did not pass its self-test (\"$vfs_marker\"):" ;;
+initramfs) echo "FAIL $label the initramfs was not unpacked (\"$initramfs_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
 screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
 typing)  echo "FAIL $label the shell did not print these lines (count:text): ${typed[*]}" ;;

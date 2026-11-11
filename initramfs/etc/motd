@@ -1,0 +1,3 @@
+Welcome to myos!
+This file came from the initramfs: a tar archive that Limine loads next to
+the kernel, unpacked into the tmpfs at / during boot.
