@@ -157,17 +157,31 @@ static void warn_line(const char *what) {
     kprintf(ANSI_YELLOW "  [warn] %s" ANSI_RESET "\n", what);
 }
 
-// The first program loaded from a file: /bin/init, from the initramfs. It
-// checks the libc and its own startup, prints what it finds and exits.
-static void run_init(char *line, size_t size) {
-    char *argv[] = {"/bin/init", NULL};
-    int status;
-    int err = process_run("/bin/init", argv, &status);
-    if (err) ksnprintf(line, size, "/bin/init: %s", strerror(err));
-    else if (status < 0) ksnprintf(line, size, "/bin/init was killed");
-    else ksnprintf(line, size, "/bin/init exited with status %d", status);
-    if (err == 0 && status == 0) ok(line);
-    else warn_line(line);
+// Run /bin/init, which runs the shell (/bin/sh), and wait for it: it only
+// ends if something went wrong. It gets PATH, HOME and, with a screen,
+// COLUMNS, so the shell knows how long a line fits on one row.
+static void run_init(void) {
+    char columns[24] = "";
+    unsigned cols = console_get_info().cols;
+    if (cols) ksnprintf(columns, sizeof columns, "COLUMNS=%u", cols);
+    char *argv[] = {"/bin/init", NULL}, *envp[] = {"PATH=/bin", "HOME=/", cols ? columns : NULL, NULL};
+    struct process *p;
+    char line[128];
+    int err = process_exec("/bin/init", argv, envp, &p);
+    if (err == 0 && !process_start(p)) {
+        process_free(p);
+        err = -ENOMEM;
+    }
+    if (err) {
+        ksnprintf(line, sizeof line, "/bin/init: %s", strerror(err));
+        warn_line(line);
+        return;
+    }
+    process_wait(p);
+    if (p->fault == -1) ksnprintf(line, sizeof line, "/bin/init exited with status %d", p->status);
+    else ksnprintf(line, sizeof line, "/bin/init was killed");
+    warn_line(line);
+    process_free(p);
 }
 
 // "1234.567 MHz"
@@ -388,8 +402,6 @@ void kmain(void) {
     process_self_test(line, sizeof line);
     ok(line);
 
-    run_init(line, sizeof line);
-
     if (have_screen) {
         struct console_info con = console_get_info();
         uint64_t t0 = clock_monotonic_ns();
@@ -426,11 +438,13 @@ void kmain(void) {
     if (!(read_rflags() & RFLAGS_IF)) panic("interrupts were turned off during boot");
 
     kprintf("\n");
+    if (keyboard) kprintf(ANSI_YELLOW "  Kernel is up. Type help for a list of commands." ANSI_RESET "\n\n");
+    else kprintf(ANSI_YELLOW "  Kernel is up. No keyboard, so nothing can be typed into the shell." ANSI_RESET "\n\n");
+    run_init();
     if (keyboard) {
-        kprintf(ANSI_YELLOW "  Kernel is up. Type help for a list of commands." ANSI_RESET "\n\n");
+        kprintf("  Starting the kernel shell instead.\n\n");
         shell_run();
     }
-    kprintf(ANSI_YELLOW "  Kernel is up. No keyboard, so this CPU is going to sleep." ANSI_RESET "\n\n");
     // The idle thread sleeps with interrupts on, so IRQs still get handled.
     thread_exit();
 }

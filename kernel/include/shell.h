@@ -1,6 +1,7 @@
 #pragma once
-// Kernel shell: a command line for poking at the system before user space
-// exists. It reads keys from the keyboard queue, edits the line (Backspace,
+// Kernel shell: a command line for poking at the system. The shell people
+// use is /bin/sh, in user space; this one runs when /bin/init can't, and its
+// commands are what /bin/sh runs for a word that isn't a program. It reads keys from the keyboard queue, edits the line (Backspace,
 // Delete, Left/Right, Home/End, Up/Down through the history, Ctrl+C, Ctrl+L)
 // and runs commands from the command table.
 //
@@ -26,6 +27,10 @@ struct shell_command {
     static void cmd_##name(int argc, char **argv);                                                             \
     __attribute__((used, section(".shell_commands"), aligned(8))) static const struct shell_command            \
         shell_command_##name = {#name, usage, help, cmd_##name}
+
+// The command called `name`, or NULL. The user-space shell runs these
+// through a system call (SYS_kernel_command).
+const struct shell_command *shell_find_command(const char *name);
 
 // Show the prompt and run commands forever. Needs the keyboard (ps2_init),
 // the scheduler and interrupts on; between keys the shell's thread sleeps.

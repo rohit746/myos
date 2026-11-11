@@ -1,20 +1,26 @@
-// /bin/init: the first program the kernel loads from a file.
+// /bin/init: the first program the kernel runs, from the initramfs.
 //
-// There is nothing for it to start yet (no fork or exec), so it checks that
-// a C program works in user mode: what the kernel put on its stack (argv,
-// the environment, the auxiliary vector), its segments (.data, .rodata,
-// .bss), and the libc (strings, printf, malloc, the system calls). It
-// prints a line for each check that fails and exits with how many did, so
-// the kernel's boot log shows "exited with status 0" when all is well.
+// First it checks that a C program works in user mode: what the kernel put
+// on its stack (argv, the environment, the auxiliary vector), its segments
+// (.data, .rodata, .bss), the libc (strings, printf, malloc, the system
+// calls), file descriptors, and child processes (spawn, waitpid, a child
+// that crashes). It prints a line for each check that fails.
+//
+// Then it runs the shell, /bin/sh, and waits for it; when the shell ends it
+// starts a new one. Run from the shell instead (it has a parent then), it
+// only does the checks, and exits with how many failed.
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/auxv.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -226,6 +232,146 @@ static void check_syscalls(void) {
     CHECK(clock_gettime(7, &t0) == -1 && errno == EINVAL);
 }
 
+#define SCRATCH "/init.out" // a file the checks write (tmpfs: gone at the next boot)
+
+static void check_files(void) {
+    char buf[64];
+    int fd = open("/etc/motd", O_RDONLY);
+    CHECK(fd >= 3); // 0, 1 and 2 are the console
+    CHECK(read(fd, buf, 7) == 7 && memcmp(buf, "Welcome", 7) == 0);
+    CHECK(read(fd, buf, 0) == 0);
+    CHECK(close(fd) == 0);
+    CHECK(close(fd) == -1 && errno == EBADF);
+    CHECK(read(fd, buf, 1) == -1 && errno == EBADF);
+    CHECK(open("/nope", O_RDONLY) == -1 && errno == ENOENT);
+    CHECK(open("/etc", O_WRONLY) == -1 && errno == EISDIR);
+    CHECK(open("/etc/motd", O_RDONLY | 0x80000) == -1 && errno == EINVAL); // O_CLOEXEC: not yet
+    CHECK(open((char *)0xffffffff80000000, O_RDONLY) == -1 && errno == EFAULT);
+    CHECK(write(STDIN_FILENO, "", 0) == 0); // the console, open for reading and writing
+
+    // dup and dup2 share the open file, and its offset.
+    fd = open(SCRATCH, O_RDWR | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0);
+    int fd2 = dup(fd);
+    CHECK(fd2 > fd);
+    CHECK(write(fd, "ab", 2) == 2 && write(fd2, "cd", 2) == 2);
+    CHECK(dup2(fd, 9) == 9 && dup2(9, 9) == 9);
+    CHECK(close(fd) == 0 && close(fd2) == 0);
+    CHECK(write(9, "e", 1) == 1); // still open through 9
+    CHECK(close(9) == 0);
+    CHECK(dup(42) == -1 && errno == EBADF);
+    CHECK(dup2(STDOUT_FILENO, 99) == -1 && errno == EBADF);
+    fd = open(SCRATCH, O_RDONLY);
+    CHECK(fd >= 0 && read(fd, buf, sizeof buf) == 5 && memcmp(buf, "abcde", 5) == 0);
+    close(fd);
+
+    // Open every descriptor there is.
+    int fds[32], n = 0;
+    while (n < 32 && (fds[n] = open("/dev/null", O_RDONLY)) >= 0) n++;
+    CHECK(n > 0 && n < 32 && errno == EMFILE);
+    while (n > 0) close(fds[--n]);
+}
+
+// Point stdout and stderr at `path`; restore() puts them back.
+static int saved_out, saved_err;
+
+static void redirect(const char *path) {
+    saved_out = dup(STDOUT_FILENO);
+    saved_err = dup(STDERR_FILENO);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && dup2(fd, STDOUT_FILENO) == STDOUT_FILENO && dup2(fd, STDERR_FILENO) == STDERR_FILENO);
+    close(fd);
+}
+
+static void restore(void) {
+    dup2(saved_out, STDOUT_FILENO);
+    dup2(saved_err, STDERR_FILENO);
+    close(saved_out);
+    close(saved_err);
+}
+
+// Start `argv` as a child with stdout and stderr sent to `out`, and wait for
+// it: its wait status, or -1.
+static int run_child(char *const argv[], const char *out) {
+    redirect(out);
+    pid_t pid = spawn(argv[0], argv, environ);
+    restore();
+    CHECK(pid > 0 && pid != getpid());
+    if (pid <= 0) return -1;
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(waitpid(pid, &status, 0) == -1 && errno == ECHILD); // reaped already
+    return status;
+}
+
+static void check_processes(void) {
+    CHECK(getppid() != getpid());
+    CHECK(waitpid(-1, NULL, 0) == -1 && errno == ECHILD); // no children yet
+
+    // A child that prints, into a file through its inherited stdout.
+    char *echo[] = {"/bin/echo", "from", "a child", NULL};
+    int status = run_child(echo, SCRATCH);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    char buf[64] = "";
+    int fd = open(SCRATCH, O_RDONLY);
+    CHECK(fd >= 0 && read(fd, buf, sizeof buf) == 13 && memcmp(buf, "from a child\n", 13) == 0);
+    close(fd);
+
+    // One that exits with a status, and one that crashes: the kernel says
+    // why on its stderr.
+    char *cat[] = {"/bin/cat", "/nope", NULL};
+    status = run_child(cat, "/dev/null");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 1);
+    char *crash[] = {"/bin/crash", NULL};
+    status = run_child(crash, SCRATCH);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
+    char report[256];
+    fd = open(SCRATCH, O_RDONLY);
+    ssize_t n = fd >= 0 ? read(fd, report, sizeof report - 1) : -1;
+    report[n > 0 ? n : 0] = '\0';
+    CHECK(strstr(report, "(crash) killed: page fault at 0x0000000000000000 (write, not mapped)") != NULL);
+    close(fd);
+
+    // Two at once, reaped in either order; WNOHANG doesn't wait.
+    char *quiet[] = {"/bin/echo", NULL};
+    redirect("/dev/null");
+    pid_t a = spawn(quiet[0], quiet, environ), b = spawn(quiet[0], quiet, environ);
+    restore();
+    CHECK(a > 0 && b > 0 && a != b);
+    pid_t r = waitpid(b, &status, WNOHANG);
+    CHECK(r == 0 || r == b);
+    if (r == 0) CHECK(waitpid(b, &status, 0) == b);
+    CHECK(waitpid(-1, &status, 0) == a && WIFEXITED(status));
+    CHECK(waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD);
+
+    // Programs that can't be started.
+    CHECK(spawn("/nope", quiet, environ) == -1 && errno == ENOENT);
+    CHECK(spawn("/etc/motd", quiet, environ) == -1 && errno == ENOEXEC);
+    CHECK(spawn("/bin", quiet, environ) == -1 && errno == EACCES);
+    CHECK(spawn("/bin/echo", (char **)0xffffffff80000000, environ) == -1 && errno == EFAULT);
+    CHECK(waitpid(0, &status, 0) == -1 && errno == EINVAL);
+}
+
+// Run the shell, and a new one whenever it ends.
+static void run_shell(void) {
+    char *argv[] = {"sh", NULL};
+    for (;;) {
+        pid_t pid = spawn("/bin/sh", argv, environ);
+        if (pid < 0) {
+            printf("init: can't start /bin/sh: %s\n", strerror(errno));
+            return;
+        }
+        printf("init: started /bin/sh, pid %d\n", pid);
+        int status;
+        while (waitpid(pid, &status, 0) != pid) {}
+        if (WIFSIGNALED(status)) printf("init: /bin/sh was killed by signal %d; starting a new one\n", WTERMSIG(status));
+        else printf("init: /bin/sh exited with status %d; starting a new one\n", WEXITSTATUS(status));
+        // A second first, so a shell that keeps failing at once doesn't flood the screen.
+        struct timespec second = {1, 0};
+        nanosleep(&second, NULL);
+    }
+}
+
 int main(int argc, char **argv, char **envp) {
     printf("init: hello from %s, pid %d, loaded from the initramfs\n", argv[0], getpid());
     check_startup(argc, argv, envp);
@@ -235,7 +381,12 @@ int main(int argc, char **argv, char **envp) {
     check_printf();
     check_malloc();
     check_syscalls();
+    check_files();
+    check_processes();
     if (failed) printf("init: %d checks failed\n", failed);
-    else printf("init: libc self-test passed (argv/envp/auxv, segments, strings, printf, malloc, syscalls)\n");
-    return failed;
+    else printf("init: libc self-test passed (argv/envp/auxv, segments, strings, printf, malloc, syscalls, "
+                "files, processes)\n");
+    if (getppid() != 0) return failed; // run from the shell: just the checks
+    run_shell();
+    return 1;
 }

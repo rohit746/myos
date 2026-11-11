@@ -56,6 +56,7 @@ const char *strerror(int err) {
     case E2BIG: return "Argument list too long";
     case ENOEXEC: return "Exec format error";
     case EBADF: return "Bad file descriptor";
+    case ECHILD: return "No child processes";
     case ENOMEM: return "Out of memory";
     case EACCES: return "Permission denied";
     case EFAULT: return "Bad address";

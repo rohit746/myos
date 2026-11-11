@@ -48,8 +48,9 @@ built from (`git describe`).
    isn't signed with Microsoft's keys.
 3. Power on and open the one-time boot menu (usually F12, F11, F8 or Esc).
    Pick the USB drive (the "UEFI:" entry if both are listed).
-4. Limine's menu appears for 3 seconds, then the kernel prints its boot log
-   and a `myos>` prompt. `help` lists the shell's commands.
+4. Limine's menu appears for 3 seconds, then the kernel prints its boot log,
+   starts `/bin/init`, which starts the shell, `/bin/sh`, and you get a
+   `myos>` prompt. `help` lists the shell's commands.
 
 Most PCs have no serial port, so on real hardware everything shows on the
 screen. If the machine crashes you get a red crash screen with the
@@ -76,16 +77,16 @@ kernel/src/apic.c       local APIC (x2APIC when available), I/O APIC, irq_regist
 kernel/src/time.c       timer calibration (HPET / PM timer / PIT), 1000 Hz tick, monotonic clock, sleep_ms
 kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1, LEDs
 kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue
-kernel/src/shell.c      kernel shell: line editor, history, command table, built-in commands
+kernel/src/shell.c      kernel shell: the command table (mem, ps, reboot, ...) /bin/sh runs, and a fallback shell
 kernel/src/sched.c      kernel threads, round-robin preemptive scheduler, sleep, idle thread
 kernel/src/switch.S     switch_context: swaps kernel stacks between threads
 kernel/src/sync.c       spinlocks, wait queues, mutexes, semaphores, condition variables, lock debug checks
-kernel/src/vfs.c        VFS: vnodes with an operations table, path lookup, mounts, open/read/write/readdir/stat/mkdir
+kernel/src/vfs.c        VFS: vnodes with an operations table, path lookup, mounts, refcounted open files, open/read/write/readdir/stat/mkdir
 kernel/src/tmpfs.c      tmpfs: files and directories in RAM (the root filesystem)
-kernel/src/devfs.c      devfs on /dev: console, null, zero
-kernel/src/proc.c       user processes: own address spaces, ring 3, argv/envp/auxv on the stack, copy_from_user/copy_to_user, killed on a fault
+kernel/src/devfs.c      devfs on /dev: console (keys in, raw), null, zero
+kernel/src/proc.c       user processes: own address spaces, ring 3, argv/envp/auxv, fd tables, spawn/waitpid with zombies and orphans, killed on a fault
 kernel/src/elf.c        ELF64 loader for static executables: PT_LOAD segments with their permissions, .bss zeroed
-kernel/src/syscall.c    syscall/sysret setup, SMEP/SMAP, the system calls (write, mmap, nanosleep, getpid, exit, clock_gettime)
+kernel/src/syscall.c    syscall/sysret setup, SMEP/SMAP, the system calls (read, write, open, close, dup, dup2, mmap, spawn, wait4, exit, ...)
 kernel/src/syscall.S    syscall entry (swapgs, kernel stack) and the first iretq to ring 3
 kernel/src/user_programs.S  built-in ring-3 test programs (`user hello`, `user kread`, ...)
 kernel/src/initramfs.c  unpacks the initramfs (a USTAR archive Limine loads as a module) into /
@@ -98,9 +99,12 @@ kernel/src/klog.c       kernel log: a 64 KiB ring of everything kprintf printed
 user/                   user programs, built as static ELF executables and put in the initramfs's /bin
 user/crt0.S             _start: hands the stack the kernel set up to __libc_start
 user/linker.ld          user memory layout (programs at 0x400000)
-user/libc/              tiny libc: syscall wrappers, printf, string functions, malloc over mmap, getenv, getauxval
-user/bin/init.c         /bin/init, the first program the kernel loads: checks the libc and its startup
+user/libc/              tiny libc: syscall wrappers (files, spawn, waitpid), printf, string functions, malloc over mmap, getenv, getauxval
+user/bin/init.c         /bin/init, the first program the kernel runs: checks the libc, files and processes, then runs /bin/sh
+user/bin/sh.c           /bin/sh, the shell: line editor, history, runs programs as children and waits, `> file`
 user/bin/echo.c         /bin/echo
+user/bin/cat.c          /bin/cat
+user/bin/crash.c        /bin/crash: writes to address 0, to show a crash only kills the program
 initramfs/              files packed into the initramfs; they show up under / at boot
 scripts/mkinitramfs.py  packs initramfs/ and the user programs into build/initramfs.tar (USTAR)
 scripts/boot-test.sh    headless QEMU boot test used by `make test` and CI (also types keys and checks a screendump)

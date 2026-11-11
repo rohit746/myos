@@ -22,6 +22,10 @@ __attribute__((noreturn)) void enter_user(uint64_t rip, uint64_t rsp, uint64_t a
 
 static uint64_t next_pid = 1;
 
+// Every process's parent, children, sibling, zombie and orphan. Never held
+// together with the VFS lock: files are closed before or after.
+static struct mutex tree_lock = {.guard = SPINLOCK_INIT(NULL), .dep = {.name = "process tree"}};
+
 struct process *process_current(void) {
     struct thread *t = thread_current();
     return t ? t->proc : NULL;
@@ -69,6 +73,8 @@ static struct process *process_alloc(const char *name) {
     p->fault = -1;
     p->user_rsp = USER_STACK_TOP;
     sem_init(&p->done, 0);
+    cond_init(&p->child_ended);
+    for (int i = 0; i < PROC_MAX_FDS; i++) p->fds[i] = -1;
     if (!map_pages(p, USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE, USER_STACK_PAGES, NULL, 0,
                    VMM_USER | VMM_WRITE)) {
         process_free(p);
@@ -238,11 +244,28 @@ static void process_main(void *arg) {
     enter_user(p->entry, p->user_rsp, p->arg);
 }
 
-bool process_start(struct process *p) { return thread_create(p->name, process_main, p) != NULL; }
+bool process_start(struct process *p) {
+    // One open file, shared by stdin, stdout and stderr. If it can't be
+    // opened, the process runs without them (its reads and writes fail).
+    if (p->parent == NULL && p->fds[0] < 0) {
+        int console = vfs_open("/dev/console", O_RDWR);
+        for (int i = 0; console >= 0 && i < 3; i++)
+            if (i == 0 || vfs_hold(console) == 0) p->fds[i] = console;
+    }
+    return thread_create(p->name, process_main, p) != NULL;
+}
 
 void process_wait(struct process *p) { sem_down(&p->done); }
 
+static void close_files(struct process *p) {
+    for (int i = 0; i < PROC_MAX_FDS; i++) {
+        if (p->fds[i] >= 0) vfs_close(p->fds[i]);
+        p->fds[i] = -1;
+    }
+}
+
 void process_free(struct process *p) {
+    close_files(p);
     if (p->space.pml4) {
         preempt_disable();
         vmm_space_destroy(&p->space);
@@ -251,11 +274,80 @@ void process_free(struct process *p) {
     kfree(p);
 }
 
+int64_t process_spawn(struct process *parent, const char *path, char *const argv[], char *const envp[]) {
+    struct process *c;
+    int err = process_exec(path, argv, envp, &c);
+    if (err) return err;
+    for (int i = 0; i < PROC_MAX_FDS; i++)
+        if (parent->fds[i] >= 0 && vfs_hold(parent->fds[i]) == 0) c->fds[i] = parent->fds[i];
+    int64_t pid = (int64_t)c->pid; // once it runs, it may end and be reaped at any time
+    mutex_lock(&tree_lock);
+    c->parent = parent;
+    c->sibling = parent->children;
+    parent->children = c;
+    mutex_unlock(&tree_lock);
+    if (process_start(c)) return pid;
+    mutex_lock(&tree_lock);
+    parent->children = c->sibling; // still the newest: only `parent` adds children, and it is here
+    mutex_unlock(&tree_lock);
+    process_free(c);
+    return -ENOMEM;
+}
+
+int process_signal(int vector) {
+    switch (vector) {
+    case 0: case 16: case 19: return 8; // divide error, x87 or SIMD exception: SIGFPE
+    case 1: case 3: return 5;           // debug, breakpoint: SIGTRAP
+    case 6: return 4;                   // invalid opcode: SIGILL
+    case 17: return 7;                  // alignment check: SIGBUS
+    default: return 11;                 // page fault, general protection, ...: SIGSEGV
+    }
+}
+
+int64_t process_waitpid(struct process *p, int64_t pid, int *status, int options) {
+    if (pid == 0 || pid < -1 || (options & ~WNOHANG)) return -EINVAL; // no process groups
+    mutex_lock(&tree_lock);
+    for (;;) {
+        bool any = false;
+        struct process **link = NULL;
+        for (struct process **c = &p->children; *c; c = &(*c)->sibling) {
+            if (pid != -1 && (int64_t)(*c)->pid != pid) continue;
+            any = true;
+            if ((*c)->zombie) {
+                link = c;
+                break;
+            }
+        }
+        if (!any || (link == NULL && (options & WNOHANG))) {
+            mutex_unlock(&tree_lock);
+            return any ? 0 : -ECHILD;
+        }
+        if (link) {
+            struct process *z = *link;
+            *link = z->sibling;
+            mutex_unlock(&tree_lock);
+            *status = z->fault == -1 ? (z->status & 0xff) << 8 : process_signal(z->fault);
+            int64_t reaped = (int64_t)z->pid;
+            process_free(z);
+            return reaped;
+        }
+        cond_wait(&p->child_ended, &tree_lock);
+    }
+}
+
+uint64_t process_parent_pid(struct process *p) {
+    mutex_lock(&tree_lock);
+    uint64_t pid = p->parent ? p->parent->pid : 0;
+    mutex_unlock(&tree_lock);
+    return pid;
+}
+
 void process_exit(void) {
     struct thread *t = thread_current();
     struct process *p = t->proc;
     p->ticks = t->ticks;
     p->switches = t->switches;
+    close_files(p);
 
     // Back to the kernel's page tables, then free the process's.
     cli();
@@ -267,16 +359,45 @@ void process_exit(void) {
     vmm_space_destroy(&p->space);
     preempt_enable();
 
-    // From sem_up on, process_wait() may free `p`. With interrupts off, it
-    // can't run until this thread is gone.
-    cli();
-    sem_up(&p->done);
+    // Its children are orphans now. The ones that already ended get freed
+    // here, since nobody will reap them; the others free themselves.
+    struct process *dead = NULL;
+    mutex_lock(&tree_lock);
+    while (p->children) {
+        struct process *c = p->children;
+        p->children = c->sibling;
+        c->parent = NULL;
+        c->orphan = true;
+        if (c->zombie) {
+            c->sibling = dead;
+            dead = c;
+        }
+    }
+    p->zombie = true;
+    struct process *parent = p->parent;
+    bool orphan = p->orphan;
+    if (parent) cond_broadcast(&parent->child_ended);
+    mutex_unlock(&tree_lock);
+    // From here on a parent may reap `p` and free it: don't touch it.
+    while (dead) {
+        struct process *next = dead->sibling;
+        process_free(dead);
+        dead = next;
+    }
+    if (orphan) process_free(p);
+
+    if (parent == NULL && !orphan) {
+        // From sem_up on, process_wait() may free `p`. With interrupts off,
+        // it can't run until this thread is gone.
+        cli();
+        sem_up(&p->done);
+    }
     thread_exit();
 }
 
 void process_output(struct process *p, const char *s, size_t n) {
     if (p->out == NULL) {
-        kwrite(s, n);
+        if (p->fds[2] < 0 || vfs_write(p->fds[2], s, n) < 0) kwrite(s, n);
         return;
     }
     size_t room = p->out_size - 1 - p->out_len;
@@ -308,11 +429,10 @@ void process_fault(struct interrupt_frame *f) {
     else
         ksnprintf(msg, sizeof msg, "process %lu (%s) killed: %s (exception %lu, error 0x%lx), rip %p\n", p->pid,
                   p->name, exception_name(f->vector), f->vector, f->error_code, (void *)f->rip);
-    process_output(p, msg, strlen(msg));
-
     // The fault came from user mode, so the kernel was in the middle of
     // nothing: this thread can go on as if it had called exit().
     sti();
+    process_output(p, msg, strlen(msg));
     process_exit();
 }
 
@@ -354,6 +474,27 @@ int copy_to_user(uint64_t user_dst, const void *src, size_t n) {
     memcpy((void *)user_dst, src, n);
     user_access_end();
     return 0;
+}
+
+int64_t copy_string_from_user(char *dst, uint64_t user_src, size_t size) {
+    size_t i = 0;
+    while (i < size) {
+        // Up to the end of this page, which must be readable.
+        uint64_t at = user_src + i;
+        if (at < user_src || !user_range_ok(at, 1, false)) return -EFAULT;
+        size_t chunk = PAGE_SIZE - (at & (PAGE_SIZE - 1));
+        if (chunk > size - i) chunk = size - i;
+        user_access_begin();
+        for (size_t end = i + chunk; i < end; i++) {
+            dst[i] = *(const volatile char *)(user_src + i);
+            if (dst[i] == '\0') {
+                user_access_end();
+                return (int64_t)i;
+            }
+        }
+        user_access_end();
+    }
+    return -ENAMETOOLONG;
 }
 
 // ---------------------------------------------------------------------------

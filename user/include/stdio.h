@@ -1,6 +1,7 @@
 #pragma once
-// Formatted output to the console (fd 1). No FILE streams: printf writes
-// what it formatted when it returns, so nothing needs flushing.
+// Formatted output to stdout (fd 1), or another descriptor with dprintf. No
+// FILE streams: printf writes what it formatted when it returns, so nothing
+// needs flushing.
 //
 // Conversions: d i u x X o c s p %, with the flags - 0 + space #, a width
 // and a precision (numbers or *), and the lengths hh h l ll z j t. No
