@@ -76,6 +76,10 @@ exception, registers and a backtrace that names the functions
 llvm-symbolizer --obj=build/kernel.elf 0xffffffff80001234
 ```
 
+[docs/HARDWARE.md](docs/HARDWARE.md) lists the machines myos has been tried on
+and the usual firmware gotchas. If you boot it on a PC, please file a
+[hardware report](https://github.com/rohit746/myos/issues/new?template=hardware-report.yml).
+
 ## Layout
 
 ```
