@@ -41,6 +41,9 @@ CI then creates a GitHub Release with `myos-v0.1.0.iso`, the kernel ELF (for
 `llvm-symbolizer`) and `SHA256SUMS`. The boot screen shows the version it was
 built from (`git describe`).
 
+A minor version is tagged on `main` when a milestone closes: `v0.2.0` for M10,
+`v0.3.0` for the next one, and so on.
+
 ## Booting a real PC
 
 1. `make usb DEV=/dev/diskN` (or download an ISO from Releases and write it
