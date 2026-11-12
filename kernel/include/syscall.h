@@ -61,6 +61,9 @@ extern bool smap_enabled;
 // SMAP when the CPU has them. Writes a line for the boot log.
 void syscall_init(char *line, size_t size);
 
+// The same on an application processor, once syscall_init() has run.
+void syscall_init_ap(void);
+
 // Called from syscall_entry (syscall.S) with interrupts on. The frame holds
 // the user's registers, laid out like an interrupt's; the result goes in
 // its rax.

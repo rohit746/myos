@@ -14,6 +14,9 @@
 // When no free block fits, the heap grows by mapping fresh PMM pages at
 // `heap_end`. When the top block is free and large, its pages are unmapped
 // and returned.
+//
+// One spinlock covers it all, so every CPU and thread can share the heap.
+// Interrupt handlers must not use it.
 
 #include <kheap.h>
 #include <kprintf.h>
@@ -22,6 +25,7 @@
 #include <sched.h>
 #include <stdbool.h>
 #include <string.h>
+#include <sync.h>
 #include <vmm.h>
 
 #define MAGIC_USED 0x55534544u // "USED"
@@ -54,6 +58,7 @@ static struct block *top; // the block that ends at heap_end, or NULL if the hea
 static struct block *free_head;
 static struct kheap_stats stats;
 static bool ready;
+static struct spinlock lock = SPINLOCK_INIT("kernel heap");
 
 static inline uint8_t *payload(struct block *b) { return (uint8_t *)b + HDR; }
 static inline struct links *links(struct block *b) { return (struct links *)payload(b); }
@@ -99,12 +104,16 @@ static const uint8_t *find_not(const uint8_t *p, size_t n, uint8_t value) {
 // Growing and shrinking the heap.
 // ---------------------------------------------------------------------------
 
+// Unmap [start, end) and free its pages, a batch at a time: each batch
+// takes one TLB shootdown, and only after it may the pages be reused.
 static void unmap_pages(uintptr_t start, uintptr_t end) {
-    for (uintptr_t v = start; v < end; v += PAGE_SIZE) {
-        uint64_t phys;
-        if (!vmm_virt_to_phys(&kernel_space, v, &phys)) panic("kheap: heap page %p is not mapped", (void *)v);
-        vmm_unmap(&kernel_space, v);
-        pmm_free_page(phys);
+    uint64_t phys[64];
+    while (start < end) {
+        uint64_t n = (end - start) / PAGE_SIZE;
+        if (n > 64) n = 64;
+        vmm_unmap_range(&kernel_space, start, n, phys);
+        for (uint64_t i = 0; i < n; i++) pmm_free_page(phys[i]);
+        start += n * PAGE_SIZE;
     }
 }
 
@@ -324,11 +333,11 @@ void kheap_init(void) {
     ready = true;
 }
 
-// Every entry point runs with preemption off, so threads can share the heap.
+// Every entry point holds the lock.
 static void *alloc(size_t size, uint64_t align) {
-    preempt_disable();
+    spin_lock(&lock);
     void *p = alloc_locked(size, align);
-    preempt_enable();
+    spin_unlock(&lock);
     return p;
 }
 
@@ -347,40 +356,44 @@ void *kcalloc(size_t count, size_t size) {
     return p;
 }
 
-void kfree(void *ptr) {
-    if (ptr == NULL) return;
-    preempt_disable();
+static void free_locked(void *ptr) {
     struct block *b = checked_block("kfree", ptr);
     stats.used_bytes -= b->requested;
     stats.allocations--;
     stats.total_frees++;
     release(b);
-    preempt_enable();
+}
+
+void kfree(void *ptr) {
+    if (ptr == NULL) return;
+    spin_lock(&lock);
+    free_locked(ptr);
+    spin_unlock(&lock);
 }
 
 static void *realloc_locked(void *ptr, size_t size);
 
 void *krealloc(void *ptr, size_t size) {
-    preempt_disable();
+    spin_lock(&lock);
     void *p = realloc_locked(ptr, size);
-    preempt_enable();
+    spin_unlock(&lock);
     return p;
 }
 
 static void *realloc_locked(void *ptr, size_t size) {
-    if (ptr == NULL) return kmalloc(size);
+    if (ptr == NULL) return alloc_locked(size, ALIGN);
     if (size == 0) {
-        kfree(ptr);
+        free_locked(ptr);
         return NULL;
     }
     struct block *b = checked_block("krealloc", ptr);
     if (size > KHEAP_MAX_SIZE) return NULL;
     uint64_t need = block_size_for(size);
     if (need > b->size) {
-        void *q = kmalloc(size);
+        void *q = alloc_locked(size, ALIGN);
         if (q == NULL) return NULL;
         memcpy(q, ptr, b->requested);
-        kfree(ptr);
+        free_locked(ptr);
         return q;
     }
     // Fits in place. Give back the end of the block if it is big enough.
@@ -399,21 +412,21 @@ static void *realloc_locked(void *ptr, size_t size) {
 }
 
 struct kheap_stats kheap_get_stats(void) {
-    preempt_disable();
+    spin_lock(&lock);
     struct kheap_stats s = stats;
     s.largest_free = 0;
     for (struct block *b = free_head; b; b = links(b)->next)
         if (b->size > s.largest_free) s.largest_free = b->size;
-    preempt_enable();
+    spin_unlock(&lock);
     return s;
 }
 
 static void check_locked(void);
 
 void kheap_check(void) {
-    preempt_disable();
+    spin_lock(&lock);
     check_locked();
-    preempt_enable();
+    spin_unlock(&lock);
 }
 
 static void check_locked(void) {

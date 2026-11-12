@@ -406,21 +406,14 @@ static void dev_warn(struct usb_device *d, const char *fmt, ...) {
     va_end(ap);
 }
 
-// Physically contiguous, zeroed pages the controller can reach. The page
-// allocator has no lock of its own.
+// Physically contiguous, zeroed pages the controller can reach.
 static uint64_t dma_alloc(struct xhci *c, size_t pages) {
-    preempt_disable();
     uint64_t phys = pmm_alloc_contiguous_below(pages, c->dma_limit);
-    preempt_enable();
     if (phys) memset(phys_to_virt(phys), 0, pages * PAGE_SIZE);
     return phys;
 }
 
-static void dma_free(uint64_t phys, size_t pages) {
-    preempt_disable();
-    pmm_free_contiguous(phys, pages);
-    preempt_enable();
-}
+static void dma_free(uint64_t phys, size_t pages) { pmm_free_contiguous(phys, pages); }
 
 // Wait up to `ms` for (reg & mask) == want. Sleeps between reads.
 static bool wait_op(struct xhci *c, unsigned reg, uint32_t mask, uint32_t want, uint64_t ms) {

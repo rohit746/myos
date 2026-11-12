@@ -1,12 +1,14 @@
 // Keyboard input shared by all keyboard drivers: modifier and lock state,
 // the US keymap and the event queue.
 //
-// The queue has one producer at a time, since keyboard_report() runs with
-// interrupts off on the one CPU (the keyboards' interrupt handlers, and USB
-// key repeat), and one consumer, so it needs no lock: only keyboard_report()
-// moves `head` and only the reader moves `tail`.
+// The queue has one consumer, and its producers (the PS/2 interrupt handler
+// on the BSP, the USB driver's thread on any CPU) take turns under
+// `report_lock`, with interrupts off: only keyboard_report() moves `head`
+// and only the reader moves `tail`, so the reader needs no lock.
 
+#include <cpu.h>
 #include <keyboard.h>
+#include <smp.h>
 #include <stddef.h>
 
 #define QUEUE_SIZE 256 // a power of two
@@ -57,7 +59,20 @@ static char key_char(uint8_t key, uint8_t m) {
     return c;
 }
 
+static struct raw_spinlock report_lock; // the key state and `head`
+
+static void report_locked(uint8_t key, bool pressed);
+
 void keyboard_report(uint8_t key, bool pressed) {
+    uint64_t flags = read_rflags();
+    cli();
+    raw_spin_lock(&report_lock);
+    report_locked(key, pressed);
+    raw_spin_unlock(&report_lock);
+    if (flags & RFLAGS_IF) sti();
+}
+
+static void report_locked(uint8_t key, bool pressed) {
     bool was_down = is_down(key);
     if (pressed)
         down[key / 8] |= 1u << (key % 8);

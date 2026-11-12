@@ -5,6 +5,7 @@
 #include <kheap.h>
 #include <kprintf.h>
 #include <sched.h>
+#include <smp.h>
 #include <string.h>
 #include <sync.h>
 #include <time.h>
@@ -60,6 +61,7 @@ void might_sleep(const char *what) {
 static const char *class_names[LOCK_CLASSES];
 static uint64_t taken_after[LOCK_CLASSES];
 static unsigned class_count;
+static struct raw_spinlock classes_lock; // the three above and lock_dep.class_id, from any CPU
 
 // The lock's class number, or -1 once the table is full (then new classes
 // are not checked).
@@ -97,11 +99,13 @@ static void lock_acquire(struct lock_dep *d) {
     if (t == NULL || d->name == NULL) return;
     uint64_t flags = read_rflags();
     cli();
+    raw_spin_lock(&classes_lock);
     int c = lock_class(d);
     for (unsigned i = 0; c >= 0 && i < t->locks_held; i++) {
         int h = t->held[i]->class_id - 1;
         if (h < 0 || h == c || (taken_after[h] & (1ull << c))) continue;
         if (reaches(c, h)) {
+            if (!expecting) raw_spin_unlock(&classes_lock); // to panic
             violation(V_ORDER,
                       "lock order: thread %s takes %s while holding %s, but %s has been taken while holding %s "
                       "(possible deadlock)",
@@ -110,6 +114,7 @@ static void lock_acquire(struct lock_dep *d) {
         }
         taken_after[h] |= 1ull << c;
     }
+    raw_spin_unlock(&classes_lock);
     if (t->locks_held == THREAD_LOCKS_MAX)
         panic("thread %s holds more than %d locks (taking %s)", t->name, THREAD_LOCKS_MAX, d->name);
     t->held[t->locks_held++] = d;
@@ -149,8 +154,12 @@ void spin_lock(struct spinlock *l) {
         return;
     }
     lock_acquire(&l->dep);
-    while (__atomic_exchange_n(&l->locked, 1, __ATOMIC_ACQUIRE))
-        while (l->locked) pause();
+    while (__atomic_exchange_n(&l->locked, 1, __ATOMIC_ACQUIRE)) {
+        while (l->locked) {
+            pause();
+            smp_poll(); // the holder may be waiting for this CPU's TLB flush (smp.h)
+        }
+    }
     l->owner = t;
     if (t) t->spins_held++;
 }
@@ -196,18 +205,26 @@ void spin_unlock_irqrestore(struct spinlock *l, uint64_t flags) {
 
 static uint64_t sleeps; // times a thread blocked on a wait queue (for the self-test)
 
+// Put `t` at the back of `wq`. Once the lock is let go another CPU may wake
+// it before it has blocked: `blocking` tells thread_wake() so (sched.h).
+static void enqueue_waiter(struct wait_queue *wq, struct thread *t) {
+    t->wait_next = NULL;
+    t->blocking = true;
+    if (wq->tail) wq->tail->wait_next = t;
+    else wq->head = t;
+    wq->tail = t;
+    __atomic_add_fetch(&sleeps, 1, __ATOMIC_RELAXED);
+}
+
 void wait_queue_sleep(struct wait_queue *wq, struct spinlock *lock) {
     struct thread *t = thread_current();
     if (t == NULL) panic("wait_queue_sleep: no threads yet (lock %s)", lock_name(&lock->dep));
     if (read_rflags() & RFLAGS_IF)
         panic("wait_queue_sleep: lock %s must be taken with spin_lock_irqsave", lock_name(&lock->dep));
-    t->wait_next = NULL;
-    if (wq->tail) wq->tail->wait_next = t;
-    else wq->head = t;
-    wq->tail = t;
-    sleeps++;
-    // Interrupts stay off from here until the switch, so nothing can wake
-    // the thread before it is off the CPU.
+    enqueue_waiter(wq, t);
+    // Interrupts stay off from here until the switch, so nothing on this
+    // CPU can wake the thread before it is off the CPU; another CPU's
+    // wake-up is noted (enqueue_waiter).
     spin_unlock(lock);
     if (t->spins_held) panic("thread %s sleeps while holding spinlock %s", t->name, spin_name(t));
     sched_block();
@@ -219,17 +236,13 @@ bool wait_queue_sleep_until(struct wait_queue *wq, struct spinlock *lock, uint64
     if (t == NULL) panic("wait_queue_sleep_until: no threads yet (lock %s)", lock_name(&lock->dep));
     if (read_rflags() & RFLAGS_IF)
         panic("wait_queue_sleep_until: lock %s must be taken with spin_lock_irqsave", lock_name(&lock->dep));
-    t->wait_next = NULL;
-    if (wq->tail) wq->tail->wait_next = t;
-    else wq->head = t;
-    wq->tail = t;
-    sleeps++;
+    enqueue_waiter(wq, t);
     spin_unlock(lock);
     if (t->spins_held) panic("thread %s sleeps while holding spinlock %s", t->name, spin_name(t));
     sched_block_until(deadline_ns);
     spin_lock(lock);
-    // Still on the queue: the deadline woke it, not a wake-up. Interrupts
-    // have been off since it ran again, so nothing else has touched it.
+    // Still on the queue: the deadline woke it, not a wake-up. The lock is
+    // held again, so nothing else can take it off meanwhile.
     bool woken = true;
     for (struct thread **p = &wq->head, *prev = NULL; *p; prev = *p, p = &(*p)->wait_next) {
         if (*p != t) continue;
@@ -441,13 +454,13 @@ static void contender(void *arg) {
             break;
         case TEST_SLOTS_SEM: {
             sem_down(&test_slots);
-            preempt_disable();
-            if (++inside > most_inside) most_inside = inside;
-            preempt_enable();
+            unsigned now = __atomic_add_fetch(&inside, 1, __ATOMIC_SEQ_CST);
+            unsigned most = most_inside;
+            while (now > most && !__atomic_compare_exchange_n(&most_inside, &most, now, false, __ATOMIC_SEQ_CST,
+                                                              __ATOMIC_SEQ_CST))
+                ;
             thread_yield();
-            preempt_disable();
-            inside--;
-            preempt_enable();
+            __atomic_sub_fetch(&inside, 1, __ATOMIC_SEQ_CST);
             sem_up(&test_slots);
             break;
         }

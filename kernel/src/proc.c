@@ -11,6 +11,7 @@
 #include <proc.h>
 #include <sched.h>
 #include <shell.h>
+#include <smp.h>
 #include <string.h>
 #include <syscall.h>
 #include <time.h>
@@ -37,7 +38,6 @@ struct process *process_current(void) {
 static bool map_pages(struct process *p, uint64_t virt, uint64_t pages, const void *src, size_t size,
                       uint32_t flags) {
     for (uint64_t i = 0; i < pages; i++) {
-        preempt_disable(); // the page allocator isn't thread-safe
         uint64_t page = pmm_alloc_page();
         if (page) {
             uint8_t *dst = phys_to_virt(page);
@@ -46,7 +46,6 @@ static bool map_pages(struct process *p, uint64_t virt, uint64_t pages, const vo
             if (src && off < size) memcpy(dst, (const uint8_t *)src + off, size - off < PAGE_SIZE ? size - off : PAGE_SIZE);
             vmm_map(&p->space, virt + off, page, flags);
         }
-        preempt_enable();
         if (page == 0) return false;
     }
     return true;
@@ -59,10 +58,7 @@ _Static_assert(USER_CODE_BASE >= ELF_LOAD_MIN, "built-in programs go where ELF s
 static struct process *process_alloc(const char *name) {
     struct process *p = kcalloc(1, sizeof *p);
     if (p == NULL) return NULL;
-    preempt_disable();
-    bool ok = vmm_space_create(&p->space);
-    preempt_enable();
-    if (!ok) {
+    if (!vmm_space_create(&p->space)) {
         kfree(p);
         return NULL;
     }
@@ -236,11 +232,9 @@ int process_run(const char *path, char *const argv[], int *status) {
 // The process's thread: move into its address space and drop to ring 3.
 static void process_main(void *arg) {
     struct process *p = arg;
-    cli(); // the scheduler reloads CR3 from t->cr3: change both at once
-    struct thread *t = thread_current();
-    t->proc = p;
-    t->cr3 = p->space.pml4;
-    write_cr3(t->cr3);
+    cli();
+    thread_current()->proc = p;
+    sched_set_cr3(p->space.pml4);
     enter_user(p->entry, p->user_rsp, p->arg);
 }
 
@@ -266,11 +260,7 @@ static void close_files(struct process *p) {
 
 void process_free(struct process *p) {
     close_files(p);
-    if (p->space.pml4) {
-        preempt_disable();
-        vmm_space_destroy(&p->space);
-        preempt_enable();
-    }
+    if (p->space.pml4) vmm_space_destroy(&p->space);
     kfree(p);
 }
 
@@ -349,15 +339,11 @@ void process_exit(void) {
     p->switches = t->switches;
     close_files(p);
 
-    // Back to the kernel's page tables, then free the process's.
-    cli();
+    // Back to the kernel's page tables, then free the process's. No other
+    // CPU has them loaded: the process has just this one thread.
     t->proc = NULL;
-    t->cr3 = kernel_space.pml4;
-    write_cr3(t->cr3);
-    sti();
-    preempt_disable();
+    sched_set_cr3(kernel_space.pml4);
     vmm_space_destroy(&p->space);
-    preempt_enable();
 
     // Its children are orphans now. The ones that already ended get freed
     // here, since nobody will reap them; the others free themselves.
@@ -387,8 +373,8 @@ void process_exit(void) {
     if (orphan) process_free(p);
 
     if (parent == NULL && !orphan) {
-        // From sem_up on, process_wait() may free `p`. With interrupts off,
-        // it can't run until this thread is gone.
+        // From sem_up on, process_wait() may free `p` (on another CPU, at
+        // once): nothing below touches it.
         cli();
         sem_up(&p->done);
     }
@@ -528,9 +514,14 @@ static const struct program *find_program(const char *name) {
 // TSC ticks in `ms` milliseconds: what `spin` takes as its argument.
 static uint64_t tsc_ticks(uint64_t ms) { return time_get_info().tsc_hz * ms / 1000; }
 
-static struct process *spawn(const char *name, uint64_t arg, char *out, size_t out_size) {
+// A built-in program's process, not started yet.
+static struct process *create(const char *name, uint64_t arg) {
     const struct program *prog = find_program(name);
-    struct process *p = process_create(name, prog->start, (size_t)(prog->end - prog->start), arg);
+    return process_create(name, prog->start, (size_t)(prog->end - prog->start), arg);
+}
+
+static struct process *spawn(const char *name, uint64_t arg, char *out, size_t out_size) {
+    struct process *p = create(name, arg);
     if (p == NULL) return NULL;
     if (out) {
         p->out = out;
@@ -695,8 +686,8 @@ static void elf_self_test(void) {
     kfree(image);
 }
 
-#define TEST_SPINNERS 2
-#define TEST_SPIN_MS  50
+#define TEST_SPINNERS 2 // more than there are CPUs
+#define TEST_SPIN_MS  100
 
 // Pages that are neither free nor in use by the heap or the page tables:
 // what processes hold. Back where it started once they are all gone.
@@ -746,17 +737,21 @@ void process_self_test(char *line, size_t size) {
     expect_killed("priv", 13, 0, 0);
 
     // Processes that never make a system call still get preempted, and
-    // each keeps its own memory at the same addresses.
-    struct process *spin[TEST_SPINNERS];
-    for (int i = 0; i < TEST_SPINNERS; i++) {
-        spin[i] = spawn("spin", tsc_ticks(TEST_SPIN_MS), NULL, 0);
+    // each keeps its own memory at the same addresses. More of them than
+    // there are CPUs, all started at once, or each could keep one to itself.
+    struct process *spin[MAX_CPUS + TEST_SPINNERS];
+    unsigned spinners = smp_cpu_count() + TEST_SPINNERS;
+    for (unsigned i = 0; i < spinners; i++) {
+        spin[i] = create("spin", tsc_ticks(TEST_SPIN_MS));
         if (spin[i] == NULL) panic("user self-test: no memory");
     }
+    for (unsigned i = 0; i < spinners; i++)
+        if (!process_start(spin[i])) panic("user self-test: no memory");
     uint64_t least = UINT64_MAX;
-    for (int i = 0; i < TEST_SPINNERS; i++) {
+    for (unsigned i = 0; i < spinners; i++) {
         process_wait(spin[i]);
         if (spin[i]->fault != -1 || spin[i]->status != 0)
-            panic("user self-test: spinner %d ended with status %d, fault %d", i, spin[i]->status, spin[i]->fault);
+            panic("user self-test: spinner %u ended with status %d, fault %d", i, spin[i]->status, spin[i]->fault);
         if (spin[i]->switches < least) least = spin[i]->switches;
         process_free(spin[i]);
     }
@@ -769,8 +764,8 @@ void process_self_test(char *line, size_t size) {
 
     ksnprintf(line, size,
               "user mode self-test passed (ELF loaded with argv/envp/auxv, %d broken ones refused; syscalls "
-              "checked from ring 3; kernel read, cli killed; %d spinners preempted, %lu+ turns each)",
-              BROKEN_ELFS, TEST_SPINNERS, least);
+              "checked from ring 3; kernel read, cli killed; %u spinners preempted, %lu+ turns each)",
+              BROKEN_ELFS, spinners, least);
 }
 
 // ---------------------------------------------------------------------------

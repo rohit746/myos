@@ -27,7 +27,8 @@ void pmm_free_contiguous(uint64_t phys, size_t count);
 
 // Hand BOOTLOADER_RECLAIMABLE memory to the allocator. Only call this once
 // nothing uses Limine's memory any more: its responses (copy what you need
-// first), the page tables it built and the boot stack.
+// first), the page tables it built and the boot stack, and the stacks every
+// other CPU's idle thread runs on (smp.c).
 void pmm_reclaim_bootloader_memory(void);
 
 struct pmm_stats {

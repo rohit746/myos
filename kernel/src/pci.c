@@ -142,8 +142,11 @@ static void read_bars(struct pci_dev *d) {
     bool host_bridge = d->class_code == 0x06 && d->subclass == 0x00;
     uint16_t cmd = pci_read16(d, PCI_COMMAND);
 
+    // Nothing else may touch the device (or the screen, if it is the GPU)
+    // while it isn't decoding: no interrupts here, no printing elsewhere.
+    bool held = kprintf_hold();
     uint64_t flags = read_rflags();
-    cli(); // nothing else may touch the device (or the screen, if it is the GPU) while it isn't decoding
+    cli();
     if (!host_bridge) pci_write16(d, PCI_COMMAND, cmd & ~(PCI_COMMAND_IO | PCI_COMMAND_MEMORY));
     for (unsigned i = 0; i < count; i++) {
         uint16_t off = PCI_BAR0 + i * 4;
@@ -179,6 +182,7 @@ static void read_bars(struct pci_dev *d) {
     }
     if (!host_bridge) pci_write16(d, PCI_COMMAND, cmd);
     if (flags & RFLAGS_IF) sti();
+    kprintf_release(held);
 }
 
 // Walk the capability list. A broken list (a loop, or an offset into the

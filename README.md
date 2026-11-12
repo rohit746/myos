@@ -81,7 +81,7 @@ llvm-symbolizer --obj=build/kernel.elf 0xffffffff80001234
 kernel/linker.ld        memory layout (kernel at 0xffffffff80000000)
 kernel/src/entry.S      _start: first instruction the kernel runs
 kernel/src/main.c       kmain + the requests that ask Limine for info
-kernel/src/gdt.c        segment descriptors + TSS (stacks for interrupts)
+kernel/src/gdt.c        segment descriptors + TSS (stacks for interrupts), one of each per CPU, and per-CPU data through GS
 kernel/src/idt.c        interrupt table, exception handling, crash screen
 kernel/src/isr.S        256 interrupt entry stubs
 kernel/src/pmm.c        physical page allocator (bitmap)
@@ -103,7 +103,8 @@ kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue
 kernel/src/xhci.c       xHCI (USB) driver: BIOS handoff, rings, device enumeration, hubs, hot-plug, `lsusb`
 kernel/src/usb_kbd.c    USB HID boot-protocol keyboards: reports to key events, key repeat, LEDs
 kernel/src/shell.c      kernel shell: the command table (mem, ps, reboot, ...) /bin/sh runs, and a fallback shell
-kernel/src/sched.c      kernel threads, round-robin preemptive scheduler, sleep, idle thread
+kernel/src/sched.c      kernel threads, round-robin preemptive scheduler on every CPU (one locked run queue), sleep, idle threads
+kernel/src/smp.c        SMP: starts the other CPUs (Limine MP), TLB shootdowns over IPIs, stops every CPU on a panic
 kernel/src/switch.S     switch_context: swaps kernel stacks between threads
 kernel/src/sync.c       spinlocks, wait queues, mutexes, semaphores, condition variables, lock debug checks
 kernel/src/vfs.c        VFS: vnodes with an operations table, path lookup, mounts, refcounted open files, open/read/write/readdir/stat/mkdir/unlink

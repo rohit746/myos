@@ -44,7 +44,6 @@ static int map_segment(struct vmm_space *space, const uint8_t *image, const Elf6
     for (uint64_t page = ALIGN_DOWN(ph->p_vaddr, PAGE_SIZE); page < end; page += PAGE_SIZE) {
         uint64_t phys;
         if (vmm_virt_to_phys(space, page, &phys)) return -ENOEXEC; // another segment has this page
-        preempt_disable(); // the page allocator isn't thread-safe
         phys = pmm_alloc_page();
         if (phys) {
             uint8_t *dst = phys_to_virt(phys);
@@ -55,7 +54,6 @@ static int map_segment(struct vmm_space *space, const uint8_t *image, const Elf6
             if (from < to) memcpy(dst + (from - page), image + ph->p_offset + (from - ph->p_vaddr), to - from);
             vmm_map(space, page, phys, flags);
         }
-        preempt_enable();
         if (phys == 0) return -ENOMEM;
     }
     return 0;

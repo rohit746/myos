@@ -180,9 +180,11 @@ static bool calibrate(const struct refclock *ref) {
 // The tick and the clock
 // ---------------------------------------------------------------------------
 
+// Every CPU's local APIC timer ticks here; the BSP's ticks are the ones
+// counted.
 static void tick_handler(struct interrupt_frame *f) {
     (void)f;
-    ticks++;
+    if (this_cpu()->index == 0) ticks++;
     // Before sched_tick: it may switch to another thread, which then runs
     // for a while before this handler returns.
     lapic_eoi();
@@ -251,6 +253,8 @@ void time_init(bool date_known, int64_t unix_time) {
 
     if (irqs_on) sti();
 }
+
+void time_init_ap(void) { lapic_timer_start(info.tick_count, true, true); }
 
 uint64_t clock_monotonic_ns(void) {
     if (source == CLOCK_NONE) return 0;

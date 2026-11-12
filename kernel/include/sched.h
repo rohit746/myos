@@ -1,5 +1,5 @@
 #pragma once
-// Kernel threads and a preemptive round-robin scheduler, on one CPU.
+// Kernel threads and a preemptive round-robin scheduler, on every CPU.
 //
 // Every thread has its own kernel stack. A switch saves the callee-saved
 // registers on the old thread's stack, stores its stack pointer and loads
@@ -10,14 +10,20 @@
 // A thread that runs a user process has that process's page tables
 // (thread.cr3); a switch loads them, or the kernel's for a kernel thread.
 //
-// Ready threads wait in one FIFO run queue. Each runs for up to
-// SCHED_QUANTUM_MS of timer ticks before the tick puts it at the back of the
-// queue, whether it yields or not. When nothing is ready the idle thread
-// runs `hlt`.
+// Ready threads wait in one FIFO run queue that every CPU takes from, so
+// work spreads over the CPUs by itself: a CPU whose thread blocks, yields or
+// uses up its slice takes the next one. Each runs for up to SCHED_QUANTUM_MS
+// of its CPU's timer ticks before the tick puts it at the back of the queue,
+// whether it yields or not. A CPU with nothing to run runs its own idle
+// thread, `hlt`, and looks at the queue again on its next tick.
+//
+// One spinlock, taken with interrupts off, covers the queue, the sleepers
+// and every thread's state. A switch holds it from the old thread to the new
+// one: the thread switched away from is in the queue already, and no other
+// CPU may pick it up before its registers are saved.
 //
 // Switches only happen with interrupts off, and never while preemption is
-// disabled (preempt_disable): code that can't be interrupted by another
-// thread halfway, such as the heap or kprintf, disables it. A tick that
+// disabled (preempt_disable): spinlock holders disable it. A tick that
 // lands meanwhile is remembered, and preempt_enable() yields afterwards.
 //
 // FPU/SSE state: the kernel is built without x87/SSE (-mno-sse ...), so a
@@ -51,6 +57,12 @@ struct thread {
     uint64_t rsp;            // saved stack pointer while not running
     uint64_t id;
     enum thread_state state;
+    unsigned cpu;            // the CPU it is on, or was on last
+    unsigned preempt_count;  // preempt_disable() nesting
+    bool need_resched;       // a tick wanted to switch while preemption was off
+    bool blocking;           // on a wait queue, on its way to sched_block()
+    bool wake_pending;       // thread_wake() came before it blocked: don't
+    unsigned slice_left;     // ticks left in its quantum while running
     char name[THREAD_NAME_MAX];
     uint8_t *stack;          // THREAD_STACK_SIZE bytes from kmalloc; NULL for the boot thread
     uint64_t stack_top;      // goes into TSS.rsp0 while this thread runs
@@ -93,10 +105,12 @@ void thread_sleep(uint64_t ms);
 struct thread *thread_current(void);
 
 // For wait queues (sync.c). sched_block() takes the running thread off the
-// CPU until thread_wake() makes it ready again; interrupts must be off, and
-// stay off until the caller decides how it sleeps, so no wake-up is missed.
-// thread_wake() is only for a thread blocked in sched_block(), not one in
-// thread_sleep().
+// CPU until thread_wake() makes it ready again; interrupts must be off.
+// Another CPU can wake the thread as soon as it is on the wait queue, before
+// it gets here: the wait queue sets thread.blocking (under the queue's lock)
+// first, so thread_wake() then only notes the wake-up and sched_block()
+// returns at once. thread_wake() is only for a thread blocked in
+// sched_block(), not one in thread_sleep().
 void sched_block(void);
 void thread_wake(struct thread *t);
 
@@ -108,7 +122,7 @@ void thread_wake(struct thread *t);
 void sched_block_until(uint64_t wake_ns);
 
 // Threads that exist (running, ready, blocked, or dead and not freed yet),
-// the idle thread included.
+// every CPU's idle thread included.
 size_t sched_thread_count(void);
 
 // Copy up to `max` threads' details into `out` (the pointers inside are not
@@ -121,12 +135,24 @@ size_t sched_snapshot(struct thread *out, size_t max);
 void preempt_disable(void);
 void preempt_enable(void);
 
-// Called from the timer tick, interrupts off: counts the tick, wakes
-// sleepers whose time has come, and switches threads when the running one's
-// quantum is up (or the idle thread is running and another is ready).
+// Called from every CPU's timer tick, interrupts off: counts the tick,
+// wakes sleepers whose time has come (on the BSP), and switches threads when
+// the running one's quantum is up (or the idle thread is running and another
+// is ready).
 void sched_tick(void);
 
-// Boot self-test: threads that spin without ever yielding all get CPU time
-// and get preempted, thread_sleep sleeps long enough, and exited threads'
-// memory comes back. Writes a line for the boot log. Panics on failure.
+// For smp.c: the idle thread for CPU `cpu` (not started; NULL if there is no
+// memory), and the end of an application processor's start-up, which turns
+// the code running into this CPU's idle thread.
+struct thread *sched_create_idle(unsigned cpu);
+__attribute__((noreturn)) void sched_ap_enter(void);
+
+// Load `cr3` as the running thread's page tables (for its process), on this
+// CPU and in thread.cr3, at once.
+void sched_set_cr3(uint64_t cr3);
+
+// Boot self-test: threads that spin without ever yielding all get CPU time,
+// get preempted and spread over the CPUs, thread_sleep sleeps long enough,
+// and exited threads' memory comes back. Writes a line for the boot log.
+// Panics on failure.
 void sched_self_test(char *line, size_t size);

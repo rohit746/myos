@@ -31,7 +31,10 @@ bool smap_enabled;
 
 void syscall_entry(void); // syscall.S
 
-void syscall_init(char *line, size_t size) {
+static bool smep, smap;
+
+// The system-call MSRs, SMEP and SMAP, on the CPU running this.
+static void program_cpu(void) {
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
     // STAR[47:32]: `syscall` loads CS from it (0x08) and SS from it + 8
     // (0x10). STAR[63:48]: `sysret` loads SS from it + 8 (0x18 | 3) and CS
@@ -46,23 +49,28 @@ void syscall_init(char *line, size_t size) {
 
     // SMEP: ring 0 can't run code from user pages. SMAP: ring 0 can't touch
     // user pages unless RFLAGS.AC is set (stac/clac, in copy_*_user).
+    uint64_t cr4 = read_cr4();
+    if (smep) cr4 |= CR4_SMEP;
+    if (smap) cr4 |= CR4_SMAP;
+    write_cr4(cr4);
+}
+
+void syscall_init(char *line, size_t size) {
     uint32_t a, b, c, d;
     cpuid(0, 0, &a, &b, &c, &d);
-    bool smep = false, smap = false;
     if (a >= 7) {
         cpuid(7, 0, &a, &b, &c, &d);
         smep = b & (1u << 7);
         smap = b & (1u << 20);
     }
-    uint64_t cr4 = read_cr4();
-    if (smep) cr4 |= CR4_SMEP;
-    if (smap) cr4 |= CR4_SMAP;
-    write_cr4(cr4);
+    program_cpu();
     smap_enabled = smap;
 
     ksnprintf(line, size, "system calls via syscall/sysret; SMEP %s, SMAP %s",
               smep ? "on" : "not supported", smap ? "on" : "not supported");
 }
+
+void syscall_init_ap(void) { program_cpu(); }
 
 // ---------------------------------------------------------------------------
 // The calls
@@ -261,22 +269,18 @@ static int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t fla
     if (prot != PROT_NONE) {
         uint32_t vflags = VMM_USER | (prot & PROT_WRITE ? VMM_WRITE : 0) | (prot & PROT_EXEC ? VMM_EXEC : 0);
         for (uint64_t done = 0; done < size; done += PAGE_SIZE) {
-            preempt_disable(); // the page allocator isn't thread-safe
             uint64_t page = pmm_alloc_page();
             if (page) {
                 memset(phys_to_virt(page), 0, PAGE_SIZE);
                 vmm_map(&p->space, start + done, page, vflags);
             }
-            preempt_enable();
             if (page == 0) {
                 // Give back what was mapped so far.
                 for (uint64_t v = start; v < start + done; v += PAGE_SIZE) {
                     uint64_t phys;
                     vmm_virt_to_phys(&p->space, v, &phys);
-                    preempt_disable();
                     vmm_unmap(&p->space, v);
                     pmm_free_page(phys);
-                    preempt_enable();
                 }
                 return -ENOMEM;
             }
