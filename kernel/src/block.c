@@ -62,7 +62,7 @@ static void format_size(char *buf, size_t size, uint64_t bytes) {
 static void print_disk(const struct block_device *d) {
     char sz[24];
     format_size(sz, sizeof sz, d->sector_count * d->sector_size);
-    kprintf("%-5s %10s  %lu sectors of %u bytes  %s  (%s)\n", d->name, sz, d->sector_count, d->sector_size, d->model,
+    kprintf("%-7s %10s  %lu sectors of %u bytes  %s  (%s)\n", d->name, sz, d->sector_count, d->sector_size, d->model,
             d->where);
 }
 
@@ -140,8 +140,8 @@ static bool scratch_test(struct block_device *d, char *line, size_t size) {
         ksnprintf(line, size, "disk self-test: %s sector %ld reads back wrong after the write", d->name, bad);
         goto out;
     }
-    ksnprintf(line, size, "disk self-test passed (%s: read sectors 1-%d, wrote %lu-%lu and read them back)", d->name,
-              BLOCK_TEST_READ_COUNT, lba, lba + BLOCK_TEST_WRITE_COUNT - 1);
+    ksnprintf(line, size, "%s: read sectors 1-%d, wrote %lu-%lu and read them back", d->name, BLOCK_TEST_READ_COUNT,
+              lba, lba + BLOCK_TEST_WRITE_COUNT - 1);
     ok = true;
 out:
     kfree(buf);
@@ -150,6 +150,8 @@ out:
 
 bool block_self_test(char *line, size_t size) {
     line[0] = '\0';
+    char passed[200] = ""; // what each scratch disk's test did, "; " between them
+    size_t used = 0;
     for (size_t i = 0; i < disk_count; i++) {
         kprintf("  ");
         print_disk(disks[i]);
@@ -169,8 +171,16 @@ bool block_self_test(char *line, size_t size) {
             ksnprintf(line, size, "disk self-test: reading %s sector 0: %s", d->name, strerror(err));
             return false;
         }
-        if (scratch) return scratch_test(d, line, size);
+        if (!scratch) continue;
+        char one[96];
+        if (!scratch_test(d, one, sizeof one)) {
+            ksnprintf(line, size, "%s", one);
+            return false;
+        }
+        if (used < sizeof passed)
+            used += ksnprintf(passed + used, sizeof passed - used, "%s%s", used ? "; " : "", one);
     }
+    if (passed[0]) ksnprintf(line, size, "disk self-test passed (%s)", passed);
     return true;
 }
 

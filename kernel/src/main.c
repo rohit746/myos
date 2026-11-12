@@ -304,7 +304,7 @@ void kmain(void) {
     if (hhdm_request.response == NULL) panic("bootloader did not provide the HHDM offset");
     pmm_init(memmap_request.response, hhdm_request.response->offset);
     struct pmm_stats mem = pmm_get_stats();
-    char line[128];
+    char line[256];
     ksnprintf(line, sizeof line, "physical memory: %lu MiB total, %lu KiB used, %lu MiB free",
               mem.total_pages * PAGE_SIZE / (1024 * 1024),
               (mem.total_pages - mem.free_pages) * PAGE_SIZE / 1024,
