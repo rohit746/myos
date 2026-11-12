@@ -8,7 +8,8 @@
 #                   resetting or exiting (a triple fault stays there to inspect)
 #   make usb DEV=/dev/diskN   write the ISO to a USB stick (asks first)
 #   make test       boot the ISO headless under UEFI and BIOS (and once with an
-#                   xAPIC-only CPU), check the output and drive the shell;
+#                   xAPIC-only CPU), check the output and drive the shell
+#                   (under BIOS, through USB keyboards);
 #                   then check that `reboot` and `poweroff` work
 #   make test-crash headless check that the crash screen works (a kernel
 #                   that faults on purpose, and the shell's panic command)
@@ -193,7 +194,7 @@ usb: $(ISO)
 
 test: $(ISO)
 	OVMF="$(OVMF)" scripts/boot-test.sh uefi boot $(ISO) $(BUILD)/test/uefi.log
-	scripts/boot-test.sh bios boot $(ISO) $(BUILD)/test/bios.log
+	QEMU_USB=1 scripts/boot-test.sh bios boot $(ISO) $(BUILD)/test/bios.log
 	QEMU_CPU=max,-x2apic OVMF="$(OVMF)" scripts/boot-test.sh uefi boot $(ISO) $(BUILD)/test/uefi-xapic.log
 	OVMF="$(OVMF)" scripts/boot-test.sh uefi power $(ISO) $(BUILD)/test/power-uefi.log
 	scripts/boot-test.sh bios power $(ISO) $(BUILD)/test/power-bios.log

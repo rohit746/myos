@@ -1,7 +1,8 @@
 #pragma once
 // Keyboard input: key codes, modifier state, a US keymap and a queue of key
-// events. Keyboard drivers (ps2.c) report raw key presses and releases with
-// keyboard_report(); consumers take events with keyboard_read().
+// events. Keyboard drivers (ps2.c, usb_kbd.c) report raw key presses and
+// releases with keyboard_report(); consumers take events with
+// keyboard_read().
 //
 // Key codes are scancode set 1 make codes, with KEY_EXT (0x80) added for the
 // keys that send an 0xE0 prefix. Every key has one code, whatever the
@@ -79,7 +80,8 @@ struct key_event {
 };
 
 // For drivers: key `key` was pressed or released. Updates the modifiers and
-// queues an event. Safe to call from an interrupt handler.
+// queues an event. Call with interrupts off (from an interrupt handler, say),
+// so reports from different keyboards don't interleave.
 void keyboard_report(uint8_t key, bool pressed);
 
 // The current KMOD_* state.

@@ -44,6 +44,13 @@
 #          and files that aren't programs are refused), `clear` blanks the
 #          screen and `reboot` resets the machine (QEMU exits: -no-reboot);
 #          fail on any panic, exception or unhandled interrupt
+#          With QEMU_USB=1, QEMU also gets an xHCI controller with a USB
+#          keyboard on a root port and another behind a USB hub, which
+#          takes every key QEMU's monitor types: the typing and the
+#          commands above go through the hub. Both keyboards must be ready
+#          at boot, `lsusb` must list them, and a keyboard plugged in once
+#          the shell runs must be found, type a line, and be gone when it
+#          is pulled out
 #   power  pass when `reboot` restarts the machine (the kernel boots a second
 #          time) and `poweroff` then turns it off through ACPI: QEMU exits on
 #          its own, with status 0. QEMU runs without -no-reboot here, so a
@@ -55,6 +62,7 @@
 # UEFI mode needs the firmware path in $OVMF. Timeout: $BOOT_TIMEOUT (seconds).
 # Needs mtools and fsck.fat (dosfstools) for the FAT32 disk.
 # QEMU's CPU model: $QEMU_CPU (default max; max,-x2apic tests xAPIC mode).
+# USB keyboards: $QEMU_USB=1 (boot only).
 
 set -uo pipefail
 
@@ -85,6 +93,9 @@ user_marker="user mode self-test passed"
 init_marker="init: libc self-test passed"
 sh_marker="init: started /bin/sh"
 kbd_marker="PS/2 keyboard ready"
+# QEMU's xHCI has USB 3 ports 1-4 and USB 2 ports 5-8: its USB port 1 (the
+# hub) is xHCI port 5, port 2 is 6, port 3 is 7.
+usb_marker="USB keyboards ready: QEMU USB Keyboard (usb0 port 5.1), QEMU USB Keyboard (usb0 port 6)"
 # What `crc32` must print for files on the FAT disks: Limine's BOOTX64.EFI
 # in the ISO's EFI partition (MBR partition 2), and big.bin on the FAT32
 # disk (make_fat_disk).
@@ -180,12 +191,24 @@ outputs=("^  reboot +restart the machine"
          ""
          "^crash: killed by signal 11 \(segmentation fault\)"
          "^still here")
+# With USB: commands starting with @ go to QEMU's monitor instead.
+if [[ -n "${QEMU_USB:-}" ]]; then
+    commands+=(lsusb lsusb
+               "@device_add usb-kbd,id=hotkbd,bus=xhci.0,port=3" "echo typed on a keyboard plugged in just now"
+               "@device_del hotkbd" "echo typed behind the hub again")
+    outputs+=("^usb0 port 5: QEMU USB Hub \(0409:55aa, full speed\), hub, 8 ports"
+              "^usb0 port 5\.1: QEMU USB Keyboard \(0627:0001, full speed\), keyboard"
+              "usb0 port 7: QEMU USB Keyboard \(0627:0001, high speed\), keyboard"
+              "^typed on a keyboard plugged in just now"
+              "usb0 port 7: QEMU USB Keyboard disconnected"
+              "^typed behind the hub again")
+fi
 reboot_marker="Rebooting..."
 poweroff_marker="Powering off..."
 crash_marker="CPU EXCEPTION 14: Page fault"
 panic_marker="KERNEL PANIC *** panic command"
 halted_marker="System halted."
-fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PCI|AHCI|NVMe|disk|partitions|FAT|PS/2|/bin/init)|init: (check failed|can.t start)"
+fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PCI|AHCI|NVMe|disk|partitions|FAT|PS/2|xHCI|usb[0-9]|/bin/init)|init: (check failed|can.t start)"
 
 [[ -f "$iso" ]] || { echo "boot-test: $iso not found"; exit 2; }
 mkdir -p "$(dirname "$log")"
@@ -292,6 +315,10 @@ args=(-M q35 -m 512M -cpu "${QEMU_CPU:-max}" -smp "$smp" -vga std -display none
       -drive "if=none,id=usb,format=raw,file=$iso,snapshot=on" -device ide-hd,drive=usb,bus=ahci1.1
       -drive "if=none,id=fat,format=raw,file=$fat_disk" -device ide-hd,drive=fat,bus=ahci1.2)
 [[ "$expect" == power ]] || args+=(-no-reboot)
+if [[ -n "${QEMU_USB:-}" ]]; then
+    args+=(-device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0,port=2
+           -device usb-hub,bus=xhci.0,port=1 -device usb-kbd,bus=xhci.0,port=1.1)
+fi
 if [[ "$mode" == uefi ]]; then
     [[ -n "${OVMF:-}" && -f "${OVMF}" ]] || { echo "boot-test: UEFI firmware not found (set OVMF)"; exit 2; }
     args+=(-drive "if=pflash,unit=0,format=raw,readonly=on,file=$OVMF")
@@ -302,7 +329,8 @@ qemu=$!
 trap 'kill $qemu 2>/dev/null; wait $qemu 2>/dev/null; rm -f "$monitor"' EXIT
 
 # Press keys through the QEMU monitor; each one is held for 100 ms. An
-# argument "=text" types the text (letters, digits, space and , . / - ! > ~).
+# argument "=text" types the text (letters, digits, space and , . / - ! > ~);
+# "@command" runs a monitor command.
 send_keys() {
     python3 -I - "$monitor" "$@" <<'PY'
 import socket, sys, time
@@ -311,6 +339,10 @@ names = {" ": "spc", ",": "comma", ".": "dot", "/": "slash", "-": "minus", "!": 
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
 for arg in sys.argv[2:]:
+    if arg.startswith("@"):
+        s.sendall(arg[1:].encode() + b"\n")
+        time.sleep(0.2)
+        continue
     if arg.startswith("="):
         keys = [names.get(c) or ("shift-" + c.lower() if c.isupper() else c) for c in arg[1:]]
     else:
@@ -387,7 +419,9 @@ check_commands() {
     local i j
     for (( i = 0; i < ${#commands[@]}; i++ )); do
         bad=${commands[i]}
-        send_keys "=${commands[i]}" ret || return 1
+        if [[ ${commands[i]} == @* ]]; then send_keys "${commands[i]}" || return 1
+        else send_keys "=${commands[i]}" ret || return 1
+        fi
         for (( j = 0; j < 20; j++ )); do
             grep -Eq "${outputs[i]}" "$log" && break
             sleep 0.5
@@ -468,6 +502,7 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$syscall_marker" "$log"; then result=syscall
             elif ! grep -Fq "$user_marker" "$log"; then result=user
             elif ! grep -Fq "$kbd_marker" "$log"; then result=kbd
+            elif [[ -n "${QEMU_USB:-}" ]] && ! grep -Fq "$usb_marker" "$log"; then result=usb
             elif ! wait_for "$init_marker" || ! wait_for "$sh_marker"; then result=init
             else result=pass
             fi
@@ -512,7 +547,7 @@ fi
 sleep 1 # let the last lines reach the log, and any stray interrupt arrive
 if [[ "$result" == pass && ( "$expect" == boot || "$expect" == power ) ]] && grep -Eq "$fail_re" "$log"; then result=fail; fi
 
-label="[$mode/$expect${QEMU_CPU:+ -cpu $QEMU_CPU}]"
+label="[$mode/$expect${QEMU_CPU:+ -cpu $QEMU_CPU}${QEMU_USB:+ +usb}]"
 case "$result" in
 pass)
     echo "PASS $label in $((SECONDS - start))s"
@@ -536,6 +571,7 @@ syscall) echo "FAIL $label system calls were not set up (\"$syscall_marker\"):" 
 user)    echo "FAIL $label user programs did not pass their self-test (\"$user_marker\"):" ;;
 init)    echo "FAIL $label /bin/init did not pass its self-test and start the shell (\"$init_marker\", \"$sh_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
+usb)     echo "FAIL $label the USB keyboards are not ready (\"$usb_marker\"):" ;;
 screen)  echo "FAIL $label the screen does not show the colored boot log ($(cat "$log.screen")):" ;;
 typing)  echo "FAIL $label the shell did not print these lines (count:text): ${typed[*]}" ;;
 command) echo "FAIL $label the shell command \`$bad\` did not do what it should $(cat "$log.screen" 2>/dev/null):" ;;

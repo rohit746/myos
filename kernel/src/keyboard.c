@@ -1,9 +1,10 @@
 // Keyboard input shared by all keyboard drivers: modifier and lock state,
 // the US keymap and the event queue.
 //
-// The queue has one producer, the keyboard interrupt, and one consumer, so
-// it needs no lock: only the interrupt moves `head` and only the reader
-// moves `tail`.
+// The queue has one producer at a time, since keyboard_report() runs with
+// interrupts off on the one CPU (the keyboards' interrupt handlers, and USB
+// key repeat), and one consumer, so it needs no lock: only keyboard_report()
+// moves `head` and only the reader moves `tail`.
 
 #include <keyboard.h>
 #include <stddef.h>
