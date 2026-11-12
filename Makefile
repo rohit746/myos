@@ -12,7 +12,9 @@
 #                   (under BIOS, through USB keyboards);
 #                   then check that `reboot` and `poweroff` work
 #   make test-crash headless check that the crash screen works (a kernel
-#                   that faults on purpose, and the shell's panic command)
+#                   that faults on purpose, and the shell's panic command):
+#                   backtraces name functions, a corrupt frame pointer or
+#                   a fault inside the crash screen don't bring it down
 #   make test-kernel build a kernel with its unit tests (KTEST, kernel/test/),
 #                   run them headless at boot and pass or fail on the result
 #   make crash-test  boot a kernel that page-faults on purpose (with a window)
@@ -110,8 +112,29 @@ $(BUILD)/obj/%.S.o: %.S
 # .incbin'd files aren't in the -MMD dependency lists.
 $(BUILD)/obj/kernel/src/font.S.o: vendor/spleen/spleen-8x16.psf
 
-$(KERNEL): $(OBJS) kernel/linker.ld
-	$(LD) $(LDFLAGS) $(OBJS) -o $@
+# The kernel is linked twice, for its symbol table (backtrace.h): first with
+# an empty one, then with the table of that first link. The table goes after
+# .text, so the code doesn't move; to be sure, the table of the final kernel
+# must come out the same.
+KSYMS := $(BUILD)/gen/ksyms
+
+$(KSYMS)-empty.S: scripts/mksyms.py
+	@mkdir -p $(dir $@)
+	python3 -I scripts/mksyms.py --empty $@
+
+$(KSYMS).S: $(KSYMS)-nosyms.elf scripts/mksyms.py
+	python3 -I scripts/mksyms.py $< $@
+
+$(KSYMS).o $(KSYMS)-empty.o: %.o: %.S
+	$(CC) --target=$(TARGET) -c $< -o $@
+
+$(KSYMS)-nosyms.elf: $(OBJS) $(KSYMS)-empty.o kernel/linker.ld
+	$(LD) $(LDFLAGS) $(OBJS) $(KSYMS)-empty.o -o $@
+
+$(KERNEL): $(OBJS) $(KSYMS).o kernel/linker.ld
+	$(LD) $(LDFLAGS) $(OBJS) $(KSYMS).o -o $@
+	python3 -I scripts/mksyms.py $@ $(KSYMS)-check.S
+	@cmp -s $(KSYMS).S $(KSYMS)-check.S || { rm -f $@; echo "$@: linking the symbol table in moved the code"; exit 1; }
 
 # User programs (user/): each user/bin/<name>.c is linked with crt0 and the
 # libc into a static executable, build/user/<name>.elf (with debug info, for
@@ -214,6 +237,8 @@ test-crash: $(ISO)
 	OVMF="$(OVMF)" scripts/boot-test.sh uefi crash $(BUILD)/crash/myos.iso $(BUILD)/test/crash.log
 	OVMF="$(OVMF)" scripts/boot-test.sh uefi panic $(ISO) $(BUILD)/test/panic.log
 	OVMF="$(OVMF)" scripts/boot-test.sh uefi fault $(ISO) $(BUILD)/test/fault.log
+	OVMF="$(OVMF)" scripts/boot-test.sh uefi frame $(ISO) $(BUILD)/test/frame.log
+	OVMF="$(OVMF)" scripts/boot-test.sh uefi nested $(ISO) $(BUILD)/test/nested.log
 
 crash-test:
 	$(CRASH_MAKE) run

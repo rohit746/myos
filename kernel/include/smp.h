@@ -81,7 +81,9 @@ void tlb_shootdown(uint64_t pml4, uint64_t virt, uint64_t pages);
 // First thing on the way to a panic or the crash screen, interrupts off.
 // The first CPU here stops every other one (an NMI) and lets the console be
 // used without its lock; another CPU that panics meanwhile halts here.
-void smp_panic_begin(void);
+// Returns how deep this CPU's panics go: 1 for the first, 2 for a panic or
+// exception while printing that one, and so on.
+unsigned smp_panic_begin(void);
 
 // Another CPU panicked: this one is to stop. Doesn't use %gs (an NMI can
 // land before the entry code's swapgs).

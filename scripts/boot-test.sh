@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot an ISO in QEMU without a display and check the kernel's serial output.
 #
-#   scripts/boot-test.sh <uefi|bios> <boot|power|crash|panic|fault> <iso> <logfile>
+#   scripts/boot-test.sh <uefi|bios> <boot|power|crash|panic|fault|frame|nested> <iso> <logfile>
 #
 #   boot   pass when the kernel reports it's up, ACPI found all the CPUs QEMU
 #          was given and all of them came online, a PIT IRQ came in through
@@ -57,9 +57,17 @@
 #          time) and `poweroff` then turns it off through ACPI: QEMU exits on
 #          its own, with status 0. QEMU runs without -no-reboot here, so a
 #          reset or triple fault reboots instead of passing for a power-off
-#   crash  pass when the crash screen for the deliberate page fault appears
-#   panic  pass when the shell's `panic` command panics the kernel
+#   crash  pass when the crash screen for the deliberate page fault appears,
+#          its backtrace naming the function that faulted (kmain+0x...)
+#   panic  pass when the shell's `panic` command panics the kernel, with a
+#          backtrace naming the command (cmd_panic+0x...)
 #   fault  pass when the shell's `panic fault` brings up the crash screen
+#   frame  pass when `panic frame` (a page fault with a frame pointer to an
+#          unmapped address) brings up the crash screen, whose backtrace
+#          stops at that frame pointer instead of faulting again
+#   nested pass when `panic nested` (a page fault while printing a panic)
+#          reports the fault inside the panic and halts, without a triple
+#          fault
 #
 # UEFI mode needs the firmware path in $OVMF. Timeout: $BOOT_TIMEOUT (seconds).
 # Needs mtools and fsck.fat (dosfstools) for the FAT32 disk.
@@ -69,7 +77,7 @@
 set -uo pipefail
 
 mode=${1:?mode: uefi|bios}
-expect=${2:?expect: boot|power|crash|panic|fault}
+expect=${2:?expect: boot|power|crash|panic|fault|frame|nested}
 iso=${3:?iso path}
 log=${4:?log path}
 timeout_s=${BOOT_TIMEOUT:-90}
@@ -212,6 +220,12 @@ poweroff_marker="Powering off..."
 crash_marker="CPU EXCEPTION 14: Page fault"
 panic_marker="KERNEL PANIC *** panic command"
 halted_marker="System halted."
+# Backtrace lines (extended regexes): the function that faulted, the command
+# that panicked, and where a walk gave up on a corrupt frame pointer.
+crash_bt_re="^ +#0 0x[0-9a-f]+ kmain\+0x[0-9a-f]+"
+panic_bt_re="^ +#0 0x[0-9a-f]+ cmd_panic\+0x[0-9a-f]+"
+frame_bt_re="^ +stopped: frame pointer 0xffffff7f00000000 is not mapped"
+nested_marker="CPU EXCEPTION 14: Page fault inside the crash screen"
 fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PCI|AHCI|NVMe|disk|partitions|FAT|PS/2|xHCI|usb[0-9]|/bin/init)|init: (check failed|can.t start)"
 
 [[ -f "$iso" ]] || { echo "boot-test: $iso not found"; exit 2; }
@@ -516,7 +530,7 @@ while (( SECONDS - start < timeout_s )); do
         fi
     else
         if grep -Fq "$halted_marker" "$log"; then
-            grep -Fq "$crash_marker" "$log" && result=pass || result=fail
+            grep -Fq "$crash_marker" "$log" && grep -Eq "$crash_bt_re" "$log" && result=pass || result=fail
             break
         fi
     fi
@@ -544,11 +558,25 @@ if [[ "$result" == pass ]]; then
         fi ;;
     panic)
         send_keys =panic ret
-        wait_for "$panic_marker" || result=panic ;;
+        if ! wait_for "$halted_marker" || ! grep -Fq "$panic_marker" "$log" || ! grep -Eq "$panic_bt_re" "$log"; then
+            result=panic
+        fi ;;
     fault)
         send_keys "=panic fault" ret
         if ! wait_for "$halted_marker" || ! grep -Fq "$crash_marker" "$log"; then result=fault; fi ;;
+    frame)
+        send_keys "=panic frame" ret
+        if ! wait_for "$halted_marker" || ! grep -Fq "$crash_marker" "$log" || ! grep -Eq "$frame_bt_re" "$log"; then
+            result=frame
+        fi ;;
+    nested)
+        send_keys "=panic nested" ret
+        if ! wait_for "$halted_marker" || ! grep -Fq "$nested_marker" "$log"; then result=nested; fi ;;
     esac
+    # A triple fault ends QEMU (-no-reboot); a crash screen leaves it running.
+    if [[ "$result" == pass && "$expect" =~ ^(panic|fault|frame|nested)$ ]] && ! kill -0 $qemu 2>/dev/null; then
+        result=exited
+    fi
 fi
 sleep 1 # let the last lines reach the log, and any stray interrupt arrive
 if [[ "$result" == pass && ( "$expect" == boot || "$expect" == power ) ]] && grep -Eq "$fail_re" "$log"; then result=fail; fi
@@ -585,8 +613,10 @@ typing)  echo "FAIL $label the shell did not print these lines (count:text): ${t
 command) echo "FAIL $label the shell command \`$bad\` did not do what it should $(cat "$log.screen" 2>/dev/null):" ;;
 reboot)  echo "FAIL $label \`reboot\` did not restart the machine (\"$ok_marker\" only once):" ;;
 poweroff) echo "FAIL $label \`poweroff\` did not turn the machine off (QEMU still running, or exit status not 0):" ;;
-panic)   echo "FAIL $label the panic command did not panic (\"$panic_marker\"):" ;;
+panic)   echo "FAIL $label the panic command did not panic with a backtrace (\"$panic_marker\", /$panic_bt_re/, \"$halted_marker\"):" ;;
 fault)   echo "FAIL $label \`panic fault\` did not bring up the crash screen (\"$crash_marker\"):" ;;
+frame)   echo "FAIL $label \`panic frame\` did not bring up the crash screen with a backtrace stopped at the bad frame (\"$crash_marker\", /$frame_bt_re/):" ;;
+nested)  echo "FAIL $label \`panic nested\` did not report the fault inside the panic and halt (\"$nested_marker\", \"$halted_marker\"):" ;;
 exited)  echo "FAIL $label QEMU exited early (triple fault / reset?):" ;;
 *)       echo "FAIL $label no result within ${timeout_s}s:" ;;
 esac

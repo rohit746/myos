@@ -1,4 +1,5 @@
 #include <arch.h>
+#include <backtrace.h>
 #include <console.h>
 #include <cpu.h>
 #include <klog.h>
@@ -208,12 +209,17 @@ int ksnprintf(char *buf, size_t size, const char *fmt, ...) {
 
 void panic(const char *fmt, ...) {
     cli();
-    smp_panic_begin();
-    kprintf("\n" ANSI_PANIC " *** KERNEL PANIC *** ");
+    // A panic while showing a crash screen gets its message out, and no
+    // more; one in printing that message (depth 3) just stops.
+    unsigned depth = smp_panic_begin();
+    if (depth > 2) halt_forever();
+    kprintf("\n" ANSI_PANIC " *** KERNEL PANIC%s *** ", depth > 1 ? " inside the crash screen" : "");
     va_list ap;
     va_start(ap, fmt);
     kvprintf(fmt, ap);
     va_end(ap);
     kprintf(" " ANSI_RESET "\n");
+    if (depth == 1) backtrace_print(0, (uint64_t)__builtin_frame_address(0));
+    kprintf("\n  System halted.\n");
     halt_forever();
 }
