@@ -174,12 +174,21 @@ vendor/spleen           Spleen 8x16 console font, Latin-1 (BSD-2-Clause)
 
 - [x] **Boot**: Limine, UEFI + BIOS, framebuffer text console, serial, kprintf
 - [x] **CPU setup**: GDT, TSS, IDT, crash screen with backtrace
-- [ ] **Physical memory**: page-frame allocator built from the memory map
-- [ ] **Virtual memory**: own page tables, kernel heap (`kmalloc`)
-- [ ] **Interrupts from hardware**: ACPI tables (MADT), Local APIC + I/O APIC, timer
-- [ ] **Keyboard**: PS/2 first, a simple shell
-- [ ] **Multitasking**: kernel threads, scheduler, context switch
-- [ ] **User mode**: ring 3, syscalls, ELF loader, first user program
-- [ ] **Storage**: PCI enumeration, AHCI/NVMe driver, a filesystem
-- [ ] **USB**: xHCI + HID keyboard (most modern laptops have no PS/2)
-- [ ] **SMP**: start the other CPU cores
+- [x] **Physical memory**: page-frame allocator built from the memory map
+- [x] **Virtual memory**: own page tables, kernel heap (`kmalloc`)
+- [x] **Interrupts from hardware**: ACPI tables (MADT), Local APIC + I/O APIC, timer
+- [x] **Keyboard**: PS/2, a shell
+- [x] **Multitasking**: kernel threads, scheduler, context switch, locks
+- [x] **User mode**: ring 3, syscalls, ELF loader, processes, a user-space shell
+- [x] **Storage**: PCI enumeration, AHCI and NVMe drivers, partitions, FAT12/16/32
+- [x] **USB**: xHCI + HID keyboard (most modern laptops have no PS/2)
+- [x] **SMP**: every CPU core runs threads
+- [x] **Networking**: Intel e1000, DHCP, TCP/IP, sockets, `ping`, `host`, `fetch`
+- [ ] **Real hardware and first release**: everything above is tested in QEMU; try it on physical PCs and tag v0.1.0
+- [ ] **Unix user space**: floating point, file syscalls, pipes, signals, a terminal, fork/exec
+- [ ] **Persistent storage**: USB sticks, ext2, a root filesystem on disk
+- [ ] **Networking II**: listening sockets, a sturdier TCP, more network cards
+- [ ] **Desktop**: mouse, compositor, windows, a terminal emulator
+
+The plan, issue by issue, is the [roadmap issue](https://github.com/rohit746/myos/issues/30);
+the [milestones](https://github.com/rohit746/myos/milestones) show progress.
