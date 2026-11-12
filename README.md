@@ -51,7 +51,9 @@ built from (`git describe`).
    Pick the USB drive (the "UEFI:" entry if both are listed).
 4. Limine's menu appears for 3 seconds, then the kernel prints its boot log,
    starts `/bin/init`, which starts the shell, `/bin/sh`, and you get a
-   `myos>` prompt. `help` lists the shell's commands. `lspci -n` prints
+   `myos>` prompt. A PS/2 keyboard or a USB keyboard works (plugged in
+   directly or through a hub, before boot or after); `lsusb` lists the USB
+   devices. `help` lists the shell's commands. `lspci -n` prints
    the PCI devices in the same format as Linux's `lspci -n`, so the two can
    be compared line by line. `disk` lists the SATA and NVMe disks and their
    partitions (MBR or GPT), `disk read sda 0`
@@ -98,6 +100,8 @@ kernel/src/crc32.c      CRC-32 (GPT checksums, the `crc32` command)
 kernel/src/time.c       timer calibration (HPET / PM timer / PIT), 1000 Hz tick, monotonic clock, sleep_ms
 kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1, LEDs
 kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue
+kernel/src/xhci.c       xHCI (USB) driver: BIOS handoff, rings, device enumeration, hubs, hot-plug, `lsusb`
+kernel/src/usb_kbd.c    USB HID boot-protocol keyboards: reports to key events, key repeat, LEDs
 kernel/src/shell.c      kernel shell: the command table (mem, ps, reboot, ...) /bin/sh runs, and a fallback shell
 kernel/src/sched.c      kernel threads, round-robin preemptive scheduler, sleep, idle thread
 kernel/src/switch.S     switch_context: swaps kernel stacks between threads
