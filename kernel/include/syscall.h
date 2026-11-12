@@ -10,7 +10,7 @@
 
 #define SYS_read          0  // read(fd, buf, len): the console waits for a key, then gives what was typed
 #define SYS_write         1  // write(fd, buf, len)
-#define SYS_open          2  // open(path, flags, mode): O_RDONLY/O_WRONLY/O_RDWR, O_CREAT, O_TRUNC (vfs.h); mode is ignored
+#define SYS_open          2  // open(path, flags, mode): O_RDONLY/O_WRONLY/O_RDWR, O_CREAT, O_TRUNC, O_APPEND (vfs.h); mode is ignored
 #define SYS_close         3  // close(fd)
 #define SYS_mmap          9  // mmap(addr, len, prot, flags, fd, offset): anonymous memory only
 #define SYS_dup           32 // dup(fd): the lowest free descriptor, on the same open file

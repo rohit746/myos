@@ -14,7 +14,9 @@
 #          second AHCI controller and the NVMe driver one on QEMU's NVMe
 #          controller, and the disk self-test read both and wrote to them
 #          (checked again in the image files once QEMU is gone), the
-#          VFS passed its self-test
+#          partition tables of a copy of the ISO (MBR, as on a USB stick)
+#          and of a GPT disk were read and the FAT12 EFI partition and a
+#          FAT32 partition mounted on /mnt, the VFS passed its self-test
 #          and the initramfs was unpacked into /, user programs passed their
 #          self-test in ring 3, the PS/2 keyboard is ready, and /bin/init
 #          was loaded from the initramfs, passed its libc self-test (files,
@@ -29,7 +31,13 @@
 #          `lspci -n` prints as Linux's does, `lspci -v` shows the MSI-X
 #          the self-test turned on, `disk` lists the disks, `disk read`
 #          prints their first sectors and `disk test` writes one on each and
-#          puts it back, `user kread` gets killed for reading a kernel
+#          puts it back, `disk` lists the partitions, `mount` the FAT
+#          filesystems, `ls`, `stat`, `cat` and `crc32` read files and
+#          directories on both (long names, any case, multi-cluster files and
+#          directories), `>`, `>>`, `mkdir` and `rm` create, append to and
+#          delete files there, and /bin/cat copies a file across many
+#          clusters (the FAT32 image is checked with mtools and fsck.fat
+#          once QEMU is gone), `user kread` gets killed for reading a kernel
 #          address and the shell carries on; programs run as children of
 #          the shell: `/bin/echo` and `init`, `echo ... > file` writes the
 #          file, `crash` gets killed and the shell says so and carries on,
@@ -45,6 +53,7 @@
 #   fault  pass when the shell's `panic fault` brings up the crash screen
 #
 # UEFI mode needs the firmware path in $OVMF. Timeout: $BOOT_TIMEOUT (seconds).
+# Needs mtools and fsck.fat (dosfstools) for the FAT32 disk.
 # QEMU's CPU model: $QEMU_CPU (default max; max,-x2apic tests xAPIC mode).
 
 set -uo pipefail
@@ -68,12 +77,23 @@ msix_marker="igb: MSI-X on vector 0x"
 disk_marker="disk self-test passed ("
 disk_markers=("sda: read sectors 1-300, wrote" "nvme0n1: read sectors 1-300, wrote") # both in that line
 vfs_marker="VFS self-test passed"
+part_marker="partitions: sdb MBR (4), sdc GPT (1)"
+fat_marker="FAT12 on /mnt/sdb2, FAT32 on /mnt/sdc1"
 initramfs_marker="initramfs: unpacked"
 syscall_marker="system calls via syscall/sysret"
 user_marker="user mode self-test passed"
 init_marker="init: libc self-test passed"
 sh_marker="init: started /bin/sh"
 kbd_marker="PS/2 keyboard ready"
+# What `crc32` must print for files on the FAT disks: Limine's BOOTX64.EFI
+# in the ISO's EFI partition (MBR partition 2), and big.bin on the FAT32
+# disk (make_fat_disk).
+crc32_of() { python3 -I -c 'import sys, zlib; print("%08x" % zlib.crc32(sys.stdin.buffer.read()))'; }
+big_file() { python3 -I -c 'import sys; sys.stdout.buffer.write(bytes((i * 7 + i // 251) & 255 for i in range(100000)))'; }
+efi_offset() { python3 -I -c 'import struct, sys; print(struct.unpack_from("<I", open(sys.argv[1], "rb").read(512), 462 + 8)[0] * 512)' "$1"; }
+big_crc=$(big_file | crc32_of)
+efi_crc=$( [[ -f "$iso" ]] && mtype -i "$iso@@$(efi_offset "$iso")" ::/EFI/BOOT/BOOTX64.EFI | crc32_of)
+
 # Keys to type: QEMU sendkey names, or "=text" for the keys that type text.
 # Each line runs `echo`, so what it prints is what the editing produced.
 keys=("=echo " shift-h e l l p backspace o comma spc shift-w o r l d shift-1 ret
@@ -90,7 +110,15 @@ typed=("2:Hello, World!" "1:MYoS/421" "2:right!" "1:left ok")
 commands=(help uptime mem cpu acpi ps threads lspci "lspci -n" "lspci -v" disk disk "disk read sda 0" "disk test sda 2000"
           "disk read nvme0n1 0" "disk test nvme0n1 2000" "user hello" "user kread" "user priv" "ls /" "ls /etc" "cat /etc/motd" "ls /dev" "stat /dev/null"
           "mkdir /etc" "cat /nope" "/bin/echo from ring 3, via libc" init "/etc/motd" "/bin" "/bin/nope" nope
-          "echo into a file > /out" "stat /out" "cat /out" crash "echo still here")
+          "echo into a file > /out" "stat /out" "cat /out"
+          disk disk mount "ls /mnt/sdb2" "ls /mnt/sdb2/EFI/BOOT" "stat /mnt/sdb2/EFI"
+          "crc32 /mnt/sdb2/efi/boot/bootx64.efi" "cat /mnt/sdc1/hello.txt" "ls /mnt/sdc1" "ls /mnt/sdc1/many"
+          "crc32 /mnt/sdc1/big.bin" "echo written by myos > /mnt/sdc1/Created-by-myos.txt"
+          "echo appended >> /mnt/sdc1/created-by-myos.txt" "cat /mnt/sdc1/created-by-myos.txt"
+          "/bin/cat /mnt/sdc1/big.bin > /mnt/sdc1/copy.bin" "crc32 /mnt/sdc1/copy.bin" "mkdir /mnt/sdc1/New-dir"
+          "echo inside > /mnt/sdc1/new-dir/inside.txt" "rm /mnt/sdc1/new-dir" "rm /mnt/sdc1/HELLO.TXT"
+          "stat /mnt/sdc1/hello.txt" "rm /mnt/sdc1/many/file7.txt" "stat /mnt/sdc1/many"
+          crash "echo still here")
 outputs=("^  reboot +restart the machine"
          "^up [0-9]+:[0-9]{2}:[0-9]{2} \([0-9]+\.[0-9]{3} s, [0-9]+ ticks at 1000 Hz\)"
          "^physical: [0-9]+ MiB managed"
@@ -126,6 +154,29 @@ outputs=("^  reboot +restart the machine"
          ""
          "^/out: file, 12 bytes"
          "^into a file"
+         "^sdb2 +2\.8 MiB +5760 sectors of 512 bytes +EFI system +\(MBR partition 2 of sdb\)"
+         "^sdc1 +46\.9 MiB +96223 sectors of 512 bytes +myos test +\(GPT partition 1 of sdc\)"
+         "^sdc1 on /mnt/sdc1 type fat32 \([0-9]+ clusters of 512 bytes, label MYOSTEST\)"
+         "^d +EFI/"
+         "^- +266240  BOOTRISCV64\.EFI"
+         "^/mnt/sdb2/EFI: directory, 1 entries, inode [0-9]+ on fat12"
+         "^$efi_crc 319488 /mnt/sdb2/efi/boot/bootx64\.efi"
+         "^Hello from a FAT32 disk"
+         "^- +12  A long file name\.txt"
+         "^- +8  file39\.txt"
+         "^$big_crc 100000 /mnt/sdc1/big\.bin"
+         ""
+         ""
+         "^appended"
+         ""
+         "^$big_crc 100000 /mnt/sdc1/copy\.bin"
+         ""
+         ""
+         "^rm: /mnt/sdc1/new-dir: Directory not empty"
+         ""
+         "^stat: /mnt/sdc1/hello\.txt: No such file or directory"
+         ""
+         "^/mnt/sdc1/many: directory, 39 entries, inode [0-9]+ on fat32"
          "^crash: killed by signal 11 \(segmentation fault\)"
          "^still here")
 reboot_marker="Rebooting..."
@@ -133,7 +184,7 @@ poweroff_marker="Powering off..."
 crash_marker="CPU EXCEPTION 14: Page fault"
 panic_marker="KERNEL PANIC *** panic command"
 halted_marker="System halted."
-fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PCI|AHCI|NVMe|disk|PS/2|/bin/init)|init: (check failed|can.t start)"
+fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PCI|AHCI|NVMe|disk|partitions|FAT|PS/2|/bin/init)|init: (check failed|can.t start)"
 
 [[ -f "$iso" ]] || { echo "boot-test: $iso not found"; exit 2; }
 mkdir -p "$(dirname "$log")"
@@ -160,6 +211,61 @@ PY
 make_disk "$disk" ""
 make_disk "$nvme_disk" $'nvme\n'
 
+# A 48 MiB disk with a GPT and one partition (sectors 2048-98270, "myos
+# test"), formatted FAT32 with mtools (512-byte clusters, so files and
+# directories take many), with a few files on it.
+fat_disk="$log.fat"
+fat_part=$((2048 * 512)) # where the partition starts, in bytes
+fat_sectors=96223
+make_fat_disk() {
+    python3 -I - "$1" <<'PY' || return 1
+import struct, sys, uuid, zlib
+path, ss, n = sys.argv[1], 512, (48 << 20) // 512
+first, last = 2048, n - 34
+guid = lambda s: uuid.UUID(s).bytes_le
+entry = (guid("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7") + guid("6d796f73-0000-4000-8000-000000000001") +
+         struct.pack("<QQQ", first, last, 0) + "myos test".encode("utf-16-le").ljust(72, b"\0"))
+entries = entry.ljust(128 * 128, b"\0")
+def header(me, other, entries_at):
+    h = struct.pack("<8sIIIIQQQQ16sQIII", b"EFI PART", 0x10000, 92, 0, 0, me, other, 34, last,
+                    guid("6d796f73-0000-4000-8000-000000000000"), entries_at, 128, 128, zlib.crc32(entries))
+    return (h[:16] + struct.pack("<I", zlib.crc32(h)) + h[20:]).ljust(ss, b"\0")
+mbr = bytearray(ss)
+mbr[446:462] = struct.pack("<BBBBBBBBII", 0, 0, 2, 0, 0xee, 0xff, 0xff, 0xff, 1, n - 1)
+mbr[510:512] = b"\x55\xaa"
+with open(path, "wb") as f:
+    f.truncate(n * ss)
+    f.write(mbr + header(1, n - 1, 2) + entries)
+    f.seek((n - 33) * ss)
+    f.write(entries + header(n - 1, 1, n - 33))
+PY
+    local img="$1@@$fat_part" files="$1.files" i
+    mformat -i "$img" -F -c 1 -T $fat_sectors -h 64 -s 32 -H 2048 -v MYOSTEST :: || return 1
+    rm -rf "$files" && mkdir -p "$files/many" || return 1
+    printf 'Hello from a FAT32 disk\n' > "$files/HELLO.TXT"
+    printf 'a long name\n' > "$files/A long file name.txt"
+    big_file > "$files/big.bin"
+    for (( i = 0; i < 40; i++ )); do printf 'file %d\n' $i > "$files/many/file$i.txt"; done
+    mcopy -s -i "$img" "$files"/* ::/
+}
+
+# Check the FAT32 disk after QEMU has gone: what the shell wrote, appended,
+# copied, made and deleted is there (or gone), and fsck.fat finds nothing
+# wrong.
+check_fat_disk() {
+    local img="$1@@$fat_part" names
+    [[ "$(mtype -i "$img" ::/Created-by-myos.txt)" == $'written by myos\nappended' ]] ||
+        { echo "Created-by-myos.txt holds the wrong text"; return 1; }
+    cmp -s <(mtype -i "$img" ::/copy.bin) "$1.files/big.bin" || { echo "copy.bin is not a copy of big.bin"; return 1; }
+    [[ "$(mtype -i "$img" ::/New-dir/inside.txt)" == inside ]] || { echo "New-dir/inside.txt is wrong"; return 1; }
+    names=$(mdir -b -i "$img" ::/ ::/many) || return 1
+    if grep -qi 'hello\.txt\|file7\.txt' <<< "$names"; then echo "deleted files are still there"; return 1; fi
+    grep -qx '::/Created-by-myos.txt' <<< "$names" || { echo "no Created-by-myos.txt, by that name"; return 1; }
+    dd if="$1" of="$1.part" bs=512 skip=2048 count=$fat_sectors 2>/dev/null &&
+        fsck.fat -n "$1.part" > "$1.fsck" 2>&1 || { echo "fsck.fat: $(cat "$1.fsck")"; return 1; }
+}
+make_fat_disk "$fat_disk" || { echo "boot-test: could not make the FAT32 disk (mtools installed?)"; exit 2; }
+
 # Check a disk image after QEMU has gone: the self-test's sectors 1000-1007
 # hold the inverted pattern, and their neighbours and sector 2000 (which
 # `disk test` wrote and restored) the original one.
@@ -179,7 +285,9 @@ args=(-M q35 -m 512M -cpu "${QEMU_CPU:-max}" -smp "$smp" -vga std -display none
       -serial "file:$log" -monitor "unix:$monitor,server=on,wait=off" -cdrom "$iso"
       -device edu -device pcie-root-port,id=rp1,chassis=1 -device igb,bus=rp1
       -device ahci,id=ahci1 -drive "if=none,id=disk,format=raw,file=$disk" -device ide-hd,drive=disk,bus=ahci1.0
-      -drive "if=none,id=nvm,format=raw,file=$nvme_disk" -device nvme,serial=myos-test,drive=nvm)
+      -drive "if=none,id=nvm,format=raw,file=$nvme_disk" -device nvme,serial=myos-test,drive=nvm
+      -drive "if=none,id=usb,format=raw,file=$iso,snapshot=on" -device ide-hd,drive=usb,bus=ahci1.1
+      -drive "if=none,id=fat,format=raw,file=$fat_disk" -device ide-hd,drive=fat,bus=ahci1.2)
 [[ "$expect" == power ]] || args+=(-no-reboot)
 if [[ "$mode" == uefi ]]; then
     [[ -n "${OVMF:-}" && -f "${OVMF}" ]] || { echo "boot-test: UEFI firmware not found (set OVMF)"; exit 2; }
@@ -349,7 +457,9 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$pci_marker" "$log"; then result=pci
             elif ! grep -Fq "$msi_marker" "$log" || ! grep -Fq "$msix_marker" "$log"; then result=msi
             elif ! disk_test_passed; then result=disk
+            elif ! grep -Fq "$part_marker" "$log"; then result=part
             elif ! grep -Fq "$vfs_marker" "$log"; then result=vfs
+            elif ! grep -Fq "$fat_marker" "$log"; then result=fat
             elif ! grep -Fq "$initramfs_marker" "$log"; then result=initramfs
             elif ! grep -Fq "$syscall_marker" "$log"; then result=syscall
             elif ! grep -Fq "$user_marker" "$log"; then result=user
@@ -377,6 +487,8 @@ if [[ "$result" == pass ]]; then
         elif ! check_commands; then result=command
         elif ! { check_disk "$disk" && check_disk "$nvme_disk"; } > "$log.screen" 2>&1; then
             result=diskimage # QEMU is gone: `reboot` ended it
+        elif ! check_fat_disk "$fat_disk" > "$log.screen" 2>&1; then
+            result=fatimage
         fi ;;
     power)
         send_keys =reboot ret
@@ -412,6 +524,9 @@ msi)     echo "FAIL $label QEMU's edu and igb devices did not raise an MSI and a
 disk)    echo "FAIL $label the disk self-test did not pass on the AHCI and NVMe scratch disks (\"$disk_marker\" with \"${disk_markers[0]}\", \"${disk_markers[1]}\"):" ;;
 diskimage) echo "FAIL $label the disk image does not hold what the kernel wrote ($(cat "$log.screen")):" ;;
 vfs)     echo "FAIL $label the VFS did not pass its self-test (\"$vfs_marker\"):" ;;
+part)    echo "FAIL $label the partition tables were not read (\"$part_marker\"):" ;;
+fat)     echo "FAIL $label the FAT partitions were not mounted (\"$fat_marker\"):" ;;
+fatimage) echo "FAIL $label the FAT32 disk image does not hold what the shell did ($(cat "$log.screen")):" ;;
 initramfs) echo "FAIL $label the initramfs was not unpacked (\"$initramfs_marker\"):" ;;
 syscall) echo "FAIL $label system calls were not set up (\"$syscall_marker\"):" ;;
 user)    echo "FAIL $label user programs did not pass their self-test (\"$user_marker\"):" ;;

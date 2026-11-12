@@ -4,7 +4,7 @@
 // Every file, directory and device is a vnode. Its filesystem gives it a
 // table of operations (struct vnode_ops), and the VFS calls through that,
 // so open, read, write and readdir work the same on tmpfs (files in RAM,
-// tmpfs.c), devfs (/dev, devfs.c) and, later, filesystems on disks.
+// tmpfs.c), devfs (/dev, devfs.c) and FAT on disks (fat.c).
 //
 // Paths: there is no working directory until there are processes, so every
 // path starts at "/" ("etc/motd" is "/etc/motd"). "." and ".." are resolved
@@ -14,8 +14,9 @@
 // directory in every path from then on; ".." from the root of a mounted
 // filesystem goes to the directory above the mount point ("/dev/.." is "/").
 //
-// Vnodes live as long as their filesystem. Nothing can be deleted yet, so
-// they need no reference counts.
+// Vnodes live as long as their filesystem, or until they are deleted
+// (vfs_unlink). They have no reference counts: a file that is open, or a
+// directory something is mounted on, can't be deleted (-EBUSY).
 //
 // Open files live in one table for the whole kernel (VFS_MAX_FILES), and a
 // file number is an index into it. Each process has its own table of file
@@ -47,6 +48,7 @@
 #define O_ACCMODE 3
 #define O_CREAT   0100  // create the file if it does not exist
 #define O_TRUNC   01000 // empty the file (when opened for writing)
+#define O_APPEND  02000 // every write goes to the end of the file
 
 enum vnode_type { VNODE_FILE, VNODE_DIR, VNODE_CHARDEV };
 
@@ -83,6 +85,9 @@ struct vnode_ops {
     int (*create)(struct vnode *dir, const char *name, enum vnode_type type, struct vnode **out);
     // The entry at `index` (0, 1, ...), or -ENOENT past the last one.
     int (*readdir)(struct vnode *dir, uint64_t index, struct vfs_dirent *out);
+    // Delete the entry `name`, which exists and is neither open nor mounted
+    // on, and free its vnode. A directory must be empty (-ENOTEMPTY).
+    int (*unlink)(struct vnode *dir, const char *name);
 };
 
 struct vnode {
@@ -121,6 +126,10 @@ int vfs_close(int fd);
 int vfs_stat(const char *path, struct vfs_stat *st);
 int vfs_mkdir(const char *path);
 
+// Delete a file, or an empty directory. -EBUSY if it is open or something
+// is mounted on it.
+int vfs_unlink(const char *path);
+
 // Boot self-test on a private tmpfs (with a devfs on its /dev), swapped in
 // as "/" while it runs: files, directories, mounts, devices, and the
 // errors. Frees all it made. Writes a line for the boot log; panics on
@@ -137,6 +146,12 @@ struct vnode *tmpfs_new(void);
 // Free a tmpfs and everything in it. Nothing in it may be open, and
 // nothing mounted on it.
 void tmpfs_free(struct vnode *root);
+
+// Mount every FAT12/16/32 filesystem found on a block device (a partition,
+// or a disk without partitions) on /mnt/<device>: /mnt/sda1. Writes a line
+// for the boot log (empty when there were none); false if one could not be
+// mounted, with the reason.
+bool fat_mount_all(char *line, size_t size);
 
 // The devfs root: console, null and zero. Writes to the console go to the
 // screen and the serial port. Reads wait for keys and get them raw, the way

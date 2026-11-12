@@ -229,6 +229,7 @@ static int64_t do_write(int fd, const void *buf, size_t size) {
     if (f == NULL || (f->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
     struct vnode *v = f->vnode; // never a directory: those only open read-only
     if (v->ops->write == NULL) return -EPERM;
+    if (f->flags & O_APPEND) f->offset = v->size;
     int64_t n = v->ops->write(v, f->offset, buf, size);
     if (n > 0) f->offset += (uint64_t)n;
     return n;
@@ -289,6 +290,30 @@ int vfs_mkdir(const char *path) {
     char name[VFS_NAME_MAX + 1];
     int err = resolve_parent(path, &dir, name);
     if (err == 0) err = create_in(dir, name, VNODE_DIR, &v);
+    mutex_unlock(&vfs_lock);
+    return err;
+}
+
+static int do_unlink(const char *path) {
+    struct vnode *dir, *v;
+    char name[VFS_NAME_MAX + 1];
+    int err = resolve_parent(path, &dir, name);
+    if (err) return err == -EEXIST ? -EBUSY : err; // "/", "." or ".."
+    if (dir->ops->lookup == NULL) return -ENOENT;
+    err = dir->ops->lookup(dir, name, &v);
+    if (err) return err;
+    size_t len = strlen(path);
+    if (len && path[len - 1] == '/' && v->type != VNODE_DIR) return -ENOTDIR;
+    if (v->mounted) return -EBUSY;
+    for (int i = 0; i < VFS_MAX_FILES; i++)
+        if (files[i].refs && files[i].vnode == v) return -EBUSY;
+    if (dir->ops->unlink == NULL) return -EPERM;
+    return dir->ops->unlink(dir, name);
+}
+
+int vfs_unlink(const char *path) {
+    mutex_lock(&vfs_lock);
+    int err = do_unlink(path);
     mutex_unlock(&vfs_lock);
     return err;
 }
@@ -401,6 +426,11 @@ void vfs_self_test(char *line, size_t size) {
     vfs_close(fd);
     check(vfs_stat("/a/b/f", &st), 0, "stat the truncated file");
     check((int64_t)st.size, 2, "size after O_TRUNC");
+    fd = open_ok("/a/b/f", O_WRONLY | O_APPEND);
+    check(vfs_write(fd, "!", 1), 1, "write with O_APPEND");
+    vfs_close(fd);
+    check(vfs_stat("/a/b/f", &st), 0, "stat after O_APPEND");
+    check((int64_t)st.size, 3, "size after O_APPEND");
 
     check(vfs_open("/a/b/f/", O_RDONLY), -ENOTDIR, "open a file with a trailing slash");
     check(vfs_open("/a/b/f/g", O_RDWR | O_CREAT), -ENOTDIR, "create under a file");
@@ -420,6 +450,28 @@ void vfs_self_test(char *line, size_t size) {
     check(vfs_readdir(fd, &d), 1, "second entry");
     if (strcmp(d.name, "c") != 0) panic("vfs self-test: second entry of /a is %s", d.name);
     check(vfs_readdir(fd, &d), 0, "end of /a");
+    vfs_close(fd);
+
+    // Deleting.
+    fd = open_ok("/a/b/f", O_RDONLY);
+    check(vfs_unlink("/a/b/f"), -EBUSY, "unlink an open file");
+    vfs_close(fd);
+    check(vfs_unlink("/a/b"), -ENOTEMPTY, "unlink a directory that isn't empty");
+    check(vfs_unlink("/a/b/f/"), -ENOTDIR, "unlink a file with a trailing slash");
+    check(vfs_unlink("/a/b/f"), 0, "unlink a file");
+    check(vfs_stat("/a/b/f", &st), -ENOENT, "stat a deleted file");
+    check(vfs_unlink("/a/b/f"), -ENOENT, "unlink it again");
+    check(vfs_unlink("/a/b"), 0, "unlink an empty directory");
+    check(vfs_unlink("/dev"), -EBUSY, "unlink a mount point");
+    check(vfs_unlink("/dev/null"), -EPERM, "unlink in devfs");
+    check(vfs_unlink("/"), -EBUSY, "unlink /");
+    check(vfs_mkdir("/a/d"), 0, "mkdir /a/d after an unlink");
+    fd = open_ok("/a", O_RDONLY);
+    check(vfs_readdir(fd, &d), 1, "first entry after the unlink");
+    if (strcmp(d.name, "c") != 0) panic("vfs self-test: first entry of /a is %s after the unlink", d.name);
+    check(vfs_readdir(fd, &d), 1, "second entry after the unlink");
+    if (strcmp(d.name, "d") != 0) panic("vfs self-test: second entry of /a is %s after the unlink", d.name);
+    check(vfs_readdir(fd, &d), 0, "end of /a after the unlink");
     vfs_close(fd);
 
     // Devices.
@@ -461,6 +513,6 @@ void vfs_self_test(char *line, size_t size) {
     if (leaked) panic("vfs self-test: %lu allocations leaked", leaked);
 
     ksnprintf(line, size,
-              "VFS self-test passed (tmpfs files and directories, devfs, mounts, \"..\", %d open files, the errors)",
+              "VFS self-test passed (tmpfs files and directories, unlink, devfs, mounts, \"..\", %d open files, the errors)",
               VFS_MAX_FILES);
 }

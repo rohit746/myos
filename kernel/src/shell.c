@@ -10,6 +10,7 @@
 #include <apic.h>
 #include <console.h>
 #include <cpu.h>
+#include <crc32.h>
 #include <errno.h>
 #include <keyboard.h>
 #include <kheap.h>
@@ -448,6 +449,38 @@ static void cmd_mkdir(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         int err = vfs_mkdir(argv[i]);
         if (err) kprintf("mkdir: %s: %s\n", argv[i], strerror(err));
+    }
+}
+
+SHELL_COMMAND(rm, "<path...>", "delete files and empty directories");
+static void cmd_rm(int argc, char **argv) {
+    if (argc < 2) kprintf("usage: rm <path...>\n");
+    for (int i = 1; i < argc; i++) {
+        int err = vfs_unlink(argv[i]);
+        if (err) kprintf("rm: %s: %s\n", argv[i], strerror(err));
+    }
+}
+
+SHELL_COMMAND(crc32, "<path...>", "the CRC-32 of files (as zlib's crc32 computes it) and their sizes");
+static void cmd_crc32(int argc, char **argv) {
+    if (argc < 2) kprintf("usage: crc32 <path...>\n");
+    for (int i = 1; i < argc; i++) {
+        int fd = vfs_open(argv[i], O_RDONLY);
+        if (fd < 0) {
+            kprintf("crc32: %s: %s\n", argv[i], strerror(fd));
+            continue;
+        }
+        static char buf[4096];
+        uint32_t crc = 0;
+        uint64_t total = 0;
+        int64_t n;
+        while ((n = vfs_read(fd, buf, sizeof buf)) > 0) {
+            crc = crc32(crc, buf, (size_t)n);
+            total += (uint64_t)n;
+        }
+        vfs_close(fd);
+        if (n < 0) kprintf("crc32: %s: %s\n", argv[i], strerror((int)n));
+        else kprintf("%08x %lu %s\n", crc, total, argv[i]);
     }
 }
 

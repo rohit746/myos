@@ -8,7 +8,7 @@
 #include <shell.h>
 #include <string.h>
 
-#define MAX_DISKS 32
+#define MAX_DISKS 128 // partitions count too
 
 static struct block_device *disks[MAX_DISKS];
 static size_t disk_count;
@@ -43,7 +43,9 @@ int block_read(struct block_device *dev, uint64_t lba, uint32_t count, void *buf
 
 int block_write(struct block_device *dev, uint64_t lba, uint32_t count, const void *buf) {
     if (!in_range(dev, lba, count)) return -EINVAL;
-    return dev->ops->write(dev, lba, count, buf);
+    int err = dev->ops->write(dev, lba, count, buf);
+    bcache_forget(dev, lba, count); // even on an error: some of it may have been written
+    return err;
 }
 
 // "1.0 MiB", "931.5 GiB", as a disk's size.

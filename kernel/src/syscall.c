@@ -126,7 +126,7 @@ static int64_t sys_write(int64_t fd, uint64_t buf, uint64_t len) {
 }
 
 static int64_t sys_open(uint64_t user_path, uint64_t flags, uint64_t mode) {
-    if (flags & ~(uint64_t)(O_ACCMODE | O_CREAT | O_TRUNC)) return -EINVAL;
+    if (flags & ~(uint64_t)(O_ACCMODE | O_CREAT | O_TRUNC | O_APPEND)) return -EINVAL;
     char path[VFS_PATH_MAX + 1];
     int64_t err = copy_string_from_user(path, user_path, sizeof path);
     if (err < 0) return err;
