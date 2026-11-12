@@ -154,13 +154,16 @@ void pmm_free_page(uint64_t phys) {
     free_pages++;
 }
 
-uint64_t pmm_alloc_contiguous(size_t count) {
+uint64_t pmm_alloc_contiguous(size_t count) { return pmm_alloc_contiguous_below(count, UINT64_MAX); }
+
+uint64_t pmm_alloc_contiguous_below(size_t count, uint64_t limit) {
     if (count == 0 || count > free_pages) return 0;
-    if (count == 1) return pmm_alloc_page();
+    if (count == 1 && limit == UINT64_MAX) return pmm_alloc_page();
 
     // First fit, skipping fully used words quickly.
     uint64_t run = 0;
-    for (uint64_t p = 0; p < page_count; p++) {
+    uint64_t end = limit / PAGE_SIZE < page_count ? limit / PAGE_SIZE : page_count;
+    for (uint64_t p = 0; p < end; p++) {
         if (p % 64 == 0 && used_map[p / 64] == ~0ull) {
             run = 0;
             p += 63;

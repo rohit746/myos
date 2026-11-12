@@ -214,6 +214,35 @@ void wait_queue_sleep(struct wait_queue *wq, struct spinlock *lock) {
     spin_lock(lock);
 }
 
+bool wait_queue_sleep_until(struct wait_queue *wq, struct spinlock *lock, uint64_t deadline_ns) {
+    struct thread *t = thread_current();
+    if (t == NULL) panic("wait_queue_sleep_until: no threads yet (lock %s)", lock_name(&lock->dep));
+    if (read_rflags() & RFLAGS_IF)
+        panic("wait_queue_sleep_until: lock %s must be taken with spin_lock_irqsave", lock_name(&lock->dep));
+    t->wait_next = NULL;
+    if (wq->tail) wq->tail->wait_next = t;
+    else wq->head = t;
+    wq->tail = t;
+    sleeps++;
+    spin_unlock(lock);
+    if (t->spins_held) panic("thread %s sleeps while holding spinlock %s", t->name, spin_name(t));
+    sched_block_until(deadline_ns);
+    spin_lock(lock);
+    // Still on the queue: the deadline woke it, not a wake-up. Interrupts
+    // have been off since it ran again, so nothing else has touched it.
+    bool woken = true;
+    for (struct thread **p = &wq->head, *prev = NULL; *p; prev = *p, p = &(*p)->wait_next) {
+        if (*p != t) continue;
+        *p = t->wait_next;
+        if (wq->tail == t) wq->tail = prev;
+        t->wait_next = NULL;
+        woken = false;
+        break;
+    }
+    t->timed_block = false;
+    return woken;
+}
+
 struct thread *wait_queue_wake_one(struct wait_queue *wq) {
     struct thread *t = wq->head;
     if (t == NULL) return NULL;
@@ -583,6 +612,44 @@ static void test_debug_checks(void) {
         panic("sync self-test: main still holds %u locks", thread_current()->locks_held);
 }
 
+// A timed wait that nobody ends must time out, and one that a thread ends
+// must return as soon as it does.
+static struct spinlock timed_lock = SPINLOCK_INIT("selftest timed wait");
+static struct wait_queue timed_waiters = WAIT_QUEUE_INIT;
+
+#define TEST_TIMED_MS 20
+
+static void timed_waker(void *arg) {
+    for (;;) {
+        uint64_t flags = spin_lock_irqsave(&timed_lock);
+        bool waiting = timed_waiters.head != NULL;
+        if (waiting) wait_queue_wake_all(&timed_waiters);
+        spin_unlock_irqrestore(&timed_lock, flags);
+        if (waiting) return;
+        thread_sleep(1);
+    }
+}
+
+static void test_timed_wait(void) {
+    uint64_t flags = spin_lock_irqsave(&timed_lock);
+    uint64_t t0 = clock_monotonic_ns();
+    bool woken = wait_queue_sleep_until(&timed_waiters, &timed_lock, t0 + TEST_TIMED_MS * NS_PER_MS);
+    uint64_t waited = clock_monotonic_ns() - t0;
+    bool queued = timed_waiters.head != NULL;
+    spin_unlock_irqrestore(&timed_lock, flags);
+    if (woken || queued || waited < TEST_TIMED_MS * NS_PER_MS)
+        panic("sync self-test: a timed wait nobody ended returned %s after %lu us%s", woken ? "woken" : "timed out",
+              waited / 1000, queued ? ", still queued" : "");
+
+    if (thread_create("timed waker", timed_waker, NULL) == NULL) panic("sync self-test: no memory");
+    flags = spin_lock_irqsave(&timed_lock);
+    t0 = clock_monotonic_ns();
+    woken = wait_queue_sleep_until(&timed_waiters, &timed_lock, t0 + TEST_TIMEOUT_MS * NS_PER_MS);
+    waited = clock_monotonic_ns() - t0;
+    spin_unlock_irqrestore(&timed_lock, flags);
+    if (!woken) panic("sync self-test: a timed wait timed out after %lu us although a thread woke it", waited / 1000);
+}
+
 void sync_self_test(char *line, size_t size) {
     size_t threads0 = sched_thread_count();
     uint64_t allocs0 = kheap_get_stats().allocations;
@@ -629,6 +696,7 @@ void sync_self_test(char *line, size_t size) {
     mutex_init(&order_a, "selftest order a");
     mutex_init(&order_b, "selftest order b");
     test_debug_checks();
+    test_timed_wait();
 
     // Wait for every thread to exit and be freed.
     uint64_t t0 = clock_monotonic_ns();
@@ -642,6 +710,6 @@ void sync_self_test(char *line, size_t size) {
 
     ksnprintf(line, size,
               "sync self-test passed (%d threads: exact counts with spinlock, mutex, semaphore, condvar; "
-              "%lu waits; %u debug checks)",
+              "%lu waits, timed ones too; %u debug checks)",
               TEST_THREADS, sleeps - sleeps0, checks_passed);
 }

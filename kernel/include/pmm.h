@@ -19,6 +19,10 @@ void pmm_free_page(uint64_t phys);
 // `count` physically contiguous pages (for DMA buffers). Returns the first
 // page's address, or 0 if no run that long is free.
 uint64_t pmm_alloc_contiguous(size_t count);
+
+// Like pmm_alloc_contiguous, but every page lies below physical address
+// `limit` (for devices that can only reach the first 4 GiB, say).
+uint64_t pmm_alloc_contiguous_below(size_t count, uint64_t limit);
 void pmm_free_contiguous(uint64_t phys, size_t count);
 
 // Hand BOOTLOADER_RECLAIMABLE memory to the allocator. Only call this once

@@ -26,7 +26,7 @@ static bool started;
 static struct thread boot_thread; // kmain, on Limine's stack
 static struct thread *current, *idle;
 static struct thread *run_head, *run_tail; // ready threads, FIFO
-static struct thread *sleepers;            // BLOCKED in thread_sleep, unsorted
+static struct thread *sleepers;            // BLOCKED in thread_sleep or sched_block_until, unsorted
 static struct thread *all_threads;
 static struct thread *zombie;              // dead, to free after the switch away from it
 static size_t thread_count;
@@ -237,9 +237,34 @@ void sched_block(void) {
     schedule();
 }
 
+void sched_block_until(uint64_t wake_ns) {
+    if (read_rflags() & RFLAGS_IF) panic("sched_block_until: called with interrupts on");
+    current->wake_ns = wake_ns;
+    current->timed_block = true;
+    current->state = THREAD_BLOCKED;
+    current->next = sleepers;
+    sleepers = current;
+    schedule();
+}
+
 void thread_wake(struct thread *t) {
     uint64_t flags = irq_save();
-    if (t->state != THREAD_BLOCKED) panic("thread_wake: thread %lu (%s) is not blocked", t->id, t->name);
+    if (t->state != THREAD_BLOCKED) {
+        // Its deadline already made it ready (sched_block_until).
+        if (t->timed_block) {
+            irq_restore(flags);
+            return;
+        }
+        panic("thread_wake: thread %lu (%s) is not blocked", t->id, t->name);
+    }
+    if (t->timed_block) {
+        for (struct thread **p = &sleepers; *p; p = &(*p)->next) {
+            if (*p == t) {
+                *p = t->next;
+                break;
+            }
+        }
+    }
     enqueue(t);
     irq_restore(flags);
 }
