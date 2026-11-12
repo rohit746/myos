@@ -49,6 +49,13 @@ SECTIONS
         pci_drivers_start = .;
         KEEP(*(.pci_drivers))
         pci_drivers_end = .;
+
+        /* The kernel's unit tests: every KTEST (ktest.h). Empty unless the
+         * kernel is built with -DMYOS_KTEST. */
+        . = ALIGN(8);
+        ktests_start = .;
+        KEEP(*(.ktests))
+        ktests_end = .;
     } :rodata
     rodata_end = .;
 
