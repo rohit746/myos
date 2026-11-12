@@ -11,6 +11,7 @@
 #include <keyboard.h>
 #include <kheap.h>
 #include <kprintf.h>
+#include <ktest.h>
 #include <limine.h>
 #include <memory.h>
 #include <pci.h>
@@ -88,13 +89,6 @@ __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
 // ---------------------------------------------------------------------------
-
-static volatile bool breakpoint_hit;
-
-static void breakpoint_handler(struct interrupt_frame *f) {
-    (void)f;
-    breakpoint_hit = true;
-}
 
 // The PIT (8254 timer), only used here to prove a device IRQ gets through.
 #define PIT_CHANNEL0 0x40
@@ -299,14 +293,6 @@ void kmain(void) {
     idt_init();
     ok("IDT loaded (256 vectors)");
 
-    // Prove the IDT works: trigger a breakpoint exception, let our handler
-    // run, and check that execution resumes here afterwards.
-    idt_set_handler(3, breakpoint_handler);
-    __asm__ volatile("int3");
-    idt_set_handler(3, NULL);
-    if (!breakpoint_hit) panic("breakpoint self-test: handler did not run");
-    ok("interrupt self-test passed (int3 handled and returned)");
-
     print_memory_map();
     kprintf("\n");
 
@@ -475,6 +461,11 @@ void kmain(void) {
 #endif
 
     if (!(read_rflags() & RFLAGS_IF)) panic("interrupts were turned off during boot");
+
+#ifdef MYOS_KTEST
+    // `make test-kernel`: run every KTEST and exit QEMU with the result.
+    ktest_run_all();
+#endif
 
     kprintf("\n");
     if (keyboard) kprintf(ANSI_YELLOW "  Kernel is up. Type help for a list of commands." ANSI_RESET "\n\n");

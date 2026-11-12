@@ -43,6 +43,9 @@ jobs:
       - name: Crash-screen test
         run: make test-crash EXTRA_CFLAGS=-Werror
 
+      - name: Kernel unit tests (KTEST)
+        run: make test-kernel EXTRA_CFLAGS=-Werror
+
       - name: Upload ISO and logs
         if: always()
         uses: actions/upload-artifact@v7.0.2

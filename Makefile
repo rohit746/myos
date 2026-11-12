@@ -13,6 +13,8 @@
 #                   then check that `reboot` and `poweroff` work
 #   make test-crash headless check that the crash screen works (a kernel
 #                   that faults on purpose, and the shell's panic command)
+#   make test-kernel build a kernel with its unit tests (KTEST, kernel/test/),
+#                   run them headless at boot and pass or fail on the result
 #   make crash-test  boot a kernel that page-faults on purpose (with a window)
 #   make compdb      write compile_commands.json for your editor
 #   make clean
@@ -58,6 +60,11 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 	--no-dynamic-linker -T kernel/linker.ld
 
 SRCS := $(shell find kernel/src -name '*.c' -o -name '*.S')
+# The unit tests and their runner, only in a kernel built for them.
+KTEST_SRCS := $(shell find kernel/test -name '*.c')
+ifneq ($(filter -DMYOS_KTEST,$(EXTRA_CFLAGS)),)
+SRCS += $(KTEST_SRCS)
+endif
 OBJS := $(SRCS:%=$(BUILD)/obj/%.o)
 
 # Screen size for `run`, `run-bios` and `debug`: QEMU's display advertises it
@@ -78,7 +85,7 @@ QEMU_COMMON = qemu-system-x86_64 -M q35 -m 512M -cpu max -smp 4 \
 	-vga none -device VGA,xres=$(RES_X),yres=$(RES_Y),vgamem_mb=32 \
 	-serial stdio
 
-.PHONY: all kernel user run run-bios debug usb test test-crash crash-test compdb clean FORCE
+.PHONY: all kernel user run run-bios debug usb test test-crash test-kernel crash-test compdb clean FORCE
 
 all: $(ISO)
 kernel: $(KERNEL)
@@ -211,10 +218,18 @@ test-crash: $(ISO)
 crash-test:
 	$(CRASH_MAKE) run
 
+# A kernel with the unit tests (ktest.h), built separately in build/ktest. It
+# runs them at boot and exits QEMU with the result.
+KTEST_MAKE := $(MAKE) BUILD=$(BUILD)/ktest EXTRA_CFLAGS="$(EXTRA_CFLAGS) -DMYOS_KTEST"
+
+test-kernel:
+	$(KTEST_MAKE) $(BUILD)/ktest/myos.iso
+	OVMF="$(OVMF)" scripts/ktest.sh $(BUILD)/ktest/myos.iso $(BUILD)/test/ktest.log
+
 # compile_commands.json so editors (clangd) see the real x86-64 flags.
 compdb:
 	@python3 -c 'import json,os,sys; d=os.getcwd(); k,u=sys.argv[1].split(), sys.argv[2].split(); print(json.dumps([{"directory":d,"file":s,"arguments":["$(CC)"]+(u if s.startswith("user/") else k)+["-c",s]} for s in sys.argv[3:]],indent=1))' \
-	  "$(CFLAGS)" "$(USER_CFLAGS)" $(filter %.c,$(SRCS) $(USER_LIBC_SRCS)) $(wildcard user/bin/*.c) > compile_commands.json
+	  "$(CFLAGS)" "$(USER_CFLAGS)" $(filter %.c,$(SRCS) $(KTEST_SRCS) $(USER_LIBC_SRCS)) $(wildcard user/bin/*.c) > compile_commands.json
 	@echo "==> compile_commands.json written"
 
 clean:

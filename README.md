@@ -18,6 +18,7 @@ make run-bios   # boot in QEMU with legacy BIOS
 make debug      # QEMU waits for gdb: gdb build/kernel.elf -ex 'target remote :1234'
 make test       # headless boot test under UEFI and BIOS, driving the shell, then reboot and poweroff (what CI runs)
 make test-crash # headless check that the crash screen and `panic` work
+make test-kernel # build a kernel with its unit tests (kernel/test/) and run them headless
 make crash-test # boot a kernel that page-faults on purpose, in a window
 make compdb     # compile_commands.json for clangd/VS Code
 ```
@@ -26,8 +27,8 @@ make compdb     # compile_commands.json for clangd/VS Code
 
 GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on
 every push to `main` and every pull request. It builds with `-Werror`, boots the
-ISO in QEMU under UEFI and BIOS, checks the crash screen, and uploads the ISO,
-kernel and boot logs as a build artifact.
+ISO in QEMU under UEFI and BIOS, checks the crash screen, runs the kernel's
+unit tests, and uploads the ISO, kernel and boot logs as a build artifact.
 
 To publish a release, push a version tag:
 
@@ -122,6 +123,8 @@ kernel/src/font.S      embeds the console font (a PSF2 file)
 kernel/src/serial.c     COM1 serial output (QEMU / debugging)
 kernel/src/kprintf.c    printf, snprintf, panic
 kernel/src/klog.c       kernel log: a 64 KiB ring of everything kprintf printed
+kernel/include/ktest.h  KTEST, KASSERT, KEXPECT_EQ: unit tests that run inside the kernel
+kernel/test/            the unit tests and their runner, only built by `make test-kernel`
 user/                   user programs, built as static ELF executables and put in the initramfs's /bin
 user/crt0.S             _start: hands the stack the kernel set up to __libc_start
 user/linker.ld          user memory layout (programs at 0x400000)
@@ -134,6 +137,7 @@ user/bin/crash.c        /bin/crash: writes to address 0, to show a crash only ki
 initramfs/              files packed into the initramfs; they show up under / at boot
 scripts/mkinitramfs.py  packs initramfs/ and the user programs into build/initramfs.tar (USTAR)
 scripts/boot-test.sh    headless QEMU boot test used by `make test` and CI (also types keys and checks a screendump)
+scripts/ktest.sh        runs the unit-test kernel in QEMU for `make test-kernel`: TAP on serial, pass/fail through isa-debug-exit
 scripts/bdf2psf.py      turns a BDF font into the PSF2 file the console uses
 scripts/write-usb.sh    safely write the ISO to a USB stick
 vendor/limine           Limine 11.4.1 bootloader binaries (BSD-2-Clause)
