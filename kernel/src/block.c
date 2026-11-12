@@ -228,16 +228,15 @@ static void disk_test(struct block_device *d, uint64_t lba) {
         kprintf("disk: reading %s sector %lu: %s\n", d->name, lba, strerror(err));
         goto out;
     }
-    if ((err = block_write(d, lba, 1, pattern))) {
-        kprintf("disk: writing %s sector %lu: %s (it may be damaged)\n", d->name, lba, strerror(err));
-        goto out;
-    }
-    err = block_read(d, lba, 1, check);
+    // Put the sector back even if the write failed: it may have half happened.
+    int wrote = block_write(d, lba, 1, pattern);
+    err = wrote ? wrote : block_read(d, lba, 1, check);
     bool same = err == 0 && memcmp(check, pattern, ss) == 0;
     int restore = block_write(d, lba, 1, saved);
     if (restore == 0) restore = block_read(d, lba, 1, check);
     bool restored = restore == 0 && memcmp(check, saved, ss) == 0;
-    if (err) kprintf("disk: reading back %s sector %lu: %s\n", d->name, lba, strerror(err));
+    if (wrote) kprintf("disk: writing %s sector %lu: %s\n", d->name, lba, strerror(wrote));
+    else if (err) kprintf("disk: reading back %s sector %lu: %s\n", d->name, lba, strerror(err));
     else if (!same) kprintf("disk: %s sector %lu reads back different from what was written\n", d->name, lba);
     if (!restored)
         kprintf("disk: could not put %s sector %lu back as it was%s%s\n", d->name, lba, restore ? ": " : "",

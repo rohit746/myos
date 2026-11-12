@@ -172,6 +172,7 @@ struct ahci_port {
     struct cmd_header *cl;
     struct cmd_table *table;
     struct mutex lock;      // one command at a time
+    bool dead;              // its command engine would not stop: its DMA memory may still be in use
     struct spinlock irq_lock; // irq_status and waiters
     uint32_t irq_status;    // PxIS bits the interrupt handler collected
     struct wait_queue waiters;
@@ -237,9 +238,15 @@ static void port_start(struct ahci_port *p) {
 
 // After an error or a timeout (AHCI 6.2.2.1): stop the port, clear its
 // errors, clear BSY/DRQ if the device left them set, and start it again.
+// A port whose engine won't stop may still be doing DMA into slot 0's
+// memory, so it is given up on.
 static void port_recover(struct ahci_port *p) {
     port_write(p, PX_CMD, port_read(p, PX_CMD) & ~PXCMD_ST);
-    wait_reg(&p->regs[PX_CMD / 4], PXCMD_CR, 0, STOP_MS);
+    if (!wait_reg(&p->regs[PX_CMD / 4], PXCMD_CR, 0, STOP_MS)) {
+        warn(p->hba, "port %u: the command engine did not stop; the port is not used any more", p->index);
+        p->dead = true;
+        return;
+    }
     port_write(p, PX_SERR, ~0u);
     port_write(p, PX_IS, ~0u);
     if ((port_read(p, PX_TFD) & (TFD_BSY | TFD_DRQ)) && (p->hba->cap & CAP_SCLO)) {
@@ -253,9 +260,10 @@ static void port_recover(struct ahci_port *p) {
 // H2D FIS, `bytes` the data moved through the port's data buffer (0 for
 // none). Call with the port's mutex held. 0 or -EIO.
 static int port_exec(struct ahci_port *p, const uint8_t *fis, bool write, uint32_t bytes) {
+    if (p->dead) return -EIO;
     if (!wait_reg(&p->regs[PX_TFD / 4], TFD_BSY | TFD_DRQ, 0, COMMAND_TIMEOUT_MS)) {
         port_recover(p);
-        if (port_read(p, PX_TFD) & (TFD_BSY | TFD_DRQ)) return -EIO;
+        if (p->dead || (port_read(p, PX_TFD) & (TFD_BSY | TFD_DRQ))) return -EIO;
     }
 
     struct cmd_header *h = &p->cl[0];
@@ -345,6 +353,10 @@ static int port_rw(struct block_device *dev, uint64_t lba, uint32_t count, void 
         uint32_t bytes = n * dev->sector_size;
         uint8_t fis[20];
         build_fis(fis, write ? ATA_WRITE_DMA_EXT : ATA_READ_DMA_EXT, lba, (uint16_t)n);
+        if (p->dead) { // its engine may still be using p->data
+            err = -EIO;
+            break;
+        }
         if (write) memcpy(p->data, b, bytes);
         err = port_exec(p, fis, write, bytes);
         if (err == 0 && !write) memcpy(b, p->data, bytes);
