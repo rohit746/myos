@@ -1,6 +1,6 @@
 #pragma once
 // Block devices: disks that read and write whole sectors. Drivers (AHCI
-// now; NVMe and USB storage later) fill in a struct block_device and
+// and NVMe now; USB storage later) fill in a struct block_device and
 // register it; everything else reads and writes through block_read() and
 // block_write(), whatever the disk is attached to.
 //
@@ -56,9 +56,10 @@ int block_write(struct block_device *dev, uint64_t lba, uint32_t count, const vo
 #define BLOCK_TEST_WRITE_LBA   1000
 #define BLOCK_TEST_WRITE_COUNT 8
 
-// Boot self-test: list the disks, and on a scratch disk (BLOCK_TEST_MAGIC)
-// read and check a run of sectors that takes several commands, write some,
-// read them back and check their neighbours are untouched. True with a
+// Boot self-test: list the disks, and on every scratch disk
+// (BLOCK_TEST_MAGIC) read and check a run of sectors that takes several
+// commands, write some, read them back and check their neighbours are
+// untouched. True with a
 // summary in `line` (empty when there is nothing to report beyond the
 // list); false with the reason.
 bool block_self_test(char *line, size_t size);
