@@ -117,7 +117,7 @@ commands=(help uptime mem cpu acpi ps threads lspci "lspci -n" "lspci -v" disk d
           "echo appended >> /mnt/sdc1/created-by-myos.txt" "cat /mnt/sdc1/created-by-myos.txt"
           "/bin/cat /mnt/sdc1/big.bin > /mnt/sdc1/copy.bin" "crc32 /mnt/sdc1/copy.bin" "mkdir /mnt/sdc1/New-dir"
           "echo inside > /mnt/sdc1/new-dir/inside.txt" "rm /mnt/sdc1/new-dir" "rm /mnt/sdc1/HELLO.TXT"
-          "stat /mnt/sdc1/hello.txt" "rm /mnt/sdc1/many/file7.txt" "stat /mnt/sdc1/many"
+          "stat /mnt/sdc1/hello.txt" "rm /mnt/sdc1/many/file7.txt" "stat /mnt/sdc1/many" "rm /mnt/sdc1/LONGER~1.TXT"
           crash "echo still here")
 outputs=("^  reboot +restart the machine"
          "^up [0-9]+:[0-9]{2}:[0-9]{2} \([0-9]+\.[0-9]{3} s, [0-9]+ ticks at 1000 Hz\)"
@@ -177,6 +177,7 @@ outputs=("^  reboot +restart the machine"
          "^stat: /mnt/sdc1/hello\.txt: No such file or directory"
          ""
          "^/mnt/sdc1/many: directory, 39 entries, inode [0-9]+ on fat32"
+         ""
          "^crash: killed by signal 11 \(segmentation fault\)"
          "^still here")
 reboot_marker="Rebooting..."
@@ -244,6 +245,8 @@ PY
     rm -rf "$files" && mkdir -p "$files/many" || return 1
     printf 'Hello from a FAT32 disk\n' > "$files/HELLO.TXT"
     printf 'a long name\n' > "$files/A long file name.txt"
+    # Longer than a VFS name (63 bytes): shows, and is deleted, as LONGER~1.TXT.
+    printf 'long\n' > "$files/Longer than the sixty-three bytes a name can have in the VFS.txt"
     big_file > "$files/big.bin"
     for (( i = 0; i < 40; i++ )); do printf 'file %d\n' $i > "$files/many/file$i.txt"; done
     mcopy -s -i "$img" "$files"/* ::/
@@ -259,7 +262,7 @@ check_fat_disk() {
     cmp -s <(mtype -i "$img" ::/copy.bin) "$1.files/big.bin" || { echo "copy.bin is not a copy of big.bin"; return 1; }
     [[ "$(mtype -i "$img" ::/New-dir/inside.txt)" == inside ]] || { echo "New-dir/inside.txt is wrong"; return 1; }
     names=$(mdir -b -i "$img" ::/ ::/many) || return 1
-    if grep -qi 'hello\.txt\|file7\.txt' <<< "$names"; then echo "deleted files are still there"; return 1; fi
+    if grep -qi 'hello\.txt\|file7\.txt\|Longer than' <<< "$names"; then echo "deleted files are still there"; return 1; fi
     grep -qx '::/Created-by-myos.txt' <<< "$names" || { echo "no Created-by-myos.txt, by that name"; return 1; }
     dd if="$1" of="$1.part" bs=512 skip=2048 count=$fat_sectors 2>/dev/null &&
         fsck.fat -n "$1.part" > "$1.fsck" 2>&1 || { echo "fsck.fat: $(cat "$1.fsck")"; return 1; }
@@ -299,11 +302,12 @@ qemu=$!
 trap 'kill $qemu 2>/dev/null; wait $qemu 2>/dev/null; rm -f "$monitor"' EXIT
 
 # Press keys through the QEMU monitor; each one is held for 100 ms. An
-# argument "=text" types the text (letters, digits, space and , . / - ! >).
+# argument "=text" types the text (letters, digits, space and , . / - ! > ~).
 send_keys() {
     python3 -I - "$monitor" "$@" <<'PY'
 import socket, sys, time
-names = {" ": "spc", ",": "comma", ".": "dot", "/": "slash", "-": "minus", "!": "shift-1", ">": "shift-dot"}
+names = {" ": "spc", ",": "comma", ".": "dot", "/": "slash", "-": "minus", "!": "shift-1", ">": "shift-dot",
+         "~": "shift-grave_accent"}
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
 for arg in sys.argv[2:]:

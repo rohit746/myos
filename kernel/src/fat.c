@@ -716,8 +716,9 @@ static int load_dir(struct fat_node *dir) {
             err = -ENOMEM;
             break;
         }
+        // A long name too long for VFS_NAME_MAX shows as the short one, but
+        // its entries still belong to this file.
         if (!had_lfn || !utf16_to_utf8(lfn, lfn_slots * LFN_CHARS, c->name, sizeof c->name)) {
-            had_lfn = false;
             short_to_text(e.name, e.nt_case, c->name);
         }
         memcpy(c->short_name, e.name, 11);
