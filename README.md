@@ -19,6 +19,7 @@ make debug      # QEMU waits for gdb: gdb build/kernel.elf -ex 'target remote :1
 make test       # headless boot test under UEFI and BIOS, driving the shell, then reboot and poweroff (what CI runs)
 make test-crash # headless check that the crash screen and `panic` work
 make test-kernel # build a kernel with its unit tests (kernel/test/) and run them headless
+make test-net   # a script plays the LAN: the kernel must get an address by DHCP and answer ping
 make crash-test # boot a kernel that page-faults on purpose, in a window
 make compdb     # compile_commands.json for clangd/VS Code
 ```
@@ -28,7 +29,7 @@ make compdb     # compile_commands.json for clangd/VS Code
 GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on
 every push to `main` and every pull request. It builds with `-Werror`, boots the
 ISO in QEMU under UEFI and BIOS, checks the crash screen, runs the kernel's
-unit tests, and uploads the ISO, kernel and boot logs as a build artifact.
+unit tests, checks the network stack against a scripted LAN, and uploads the ISO, kernel and boot logs as a build artifact.
 
 To publish a release, push a version tag:
 
@@ -66,6 +67,16 @@ built from (`git describe`).
    work there, and writes go straight to the disk. USB sticks need a USB
    storage driver, which isn't written yet; `make test` reads the ISO's EFI
    partition by attaching the image as a SATA disk.
+
+With an Intel Ethernet port (the I217, I218 and I219 most Intel desktops
+and laptops have, or an 82574L) and a cable to a network with a DHCP
+server, the boot log shows the address it got: `network: eth0
+192.168.1.23/24 from DHCP server ...`, and the machine answers ping. `net`
+shows the card, address, neighbours and connections; `ping example.com`,
+`host example.com` and `fetch http://example.com/` (plain HTTP: there is no
+TLS) reach the internet. Those Intel chips haven't been tried on real
+hardware yet; Realtek cards have no driver. In QEMU, `make run` gives the
+machine an 82574L on QEMU's user network, where the host is 10.0.2.2.
 
 Most PCs have no serial port, so on real hardware everything shows on the
 screen. If the machine crashes you get a red crash screen with the
@@ -108,6 +119,11 @@ kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1
 kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue
 kernel/src/xhci.c       xHCI (USB) driver: BIOS handoff, rings, device enumeration, hubs, hot-plug, `lsusb`
 kernel/src/usb_kbd.c    USB HID boot-protocol keyboards: reports to key events, key repeat, LEDs
+kernel/src/e1000.c      Intel gigabit Ethernet (82540EM, 82574L, I217/I218/I219): reset, MAC address, rings, MSI or polling
+kernel/src/net.c        network stack: interfaces, the net thread, Ethernet, ARP, IPv4, ICMP (answers ping), UDP, loopback, `net`
+kernel/src/dhcp.c       DHCP client: address, gateway and DNS server for every card, lease renewal, /etc/resolv.conf
+kernel/src/tcp.c        TCP connections out: handshake, retransmission, flow control, closing
+kernel/src/socket.c     sockets as files: TCP, UDP and ping sockets, socket/connect/bind/sendto/recvfrom/setsockopt
 kernel/src/shell.c      kernel shell: the command table (mem, ps, reboot, ...) /bin/sh runs, and a fallback shell
 kernel/src/sched.c      kernel threads, round-robin preemptive scheduler on every CPU (one locked run queue), sleep, idle threads
 kernel/src/smp.c        SMP: starts the other CPUs (Limine MP), TLB shootdowns over IPIs, stops every CPU on a panic
@@ -133,16 +149,20 @@ kernel/test/            the unit tests and their runner, only built by `make tes
 user/                   user programs, built as static ELF executables and put in the initramfs's /bin
 user/crt0.S             _start: hands the stack the kernel set up to __libc_start
 user/linker.ld          user memory layout (programs at 0x400000)
-user/libc/              tiny libc: syscall wrappers (files, spawn, waitpid), printf, string functions, malloc over mmap, getenv, getauxval
+user/libc/              tiny libc: syscall wrappers (files, spawn, waitpid, sockets), printf, string functions, malloc over mmap, getenv, getauxval, a DNS resolver (gethostbyname)
 user/bin/init.c         /bin/init, the first program the kernel runs: checks the libc, files and processes, then runs /bin/sh
 user/bin/sh.c           /bin/sh, the shell: line editor, history, runs programs as children and waits, `> file`, `>> file`
 user/bin/echo.c         /bin/echo
 user/bin/cat.c          /bin/cat
 user/bin/crash.c        /bin/crash: writes to address 0, to show a crash only kills the program
+user/bin/ping.c         /bin/ping: ICMP echo through a ping socket, with round-trip times
+user/bin/fetch.c        /bin/fetch: download a page over HTTP to stdout
+user/bin/host.c         /bin/host: look a name up in DNS
 initramfs/              files packed into the initramfs; they show up under / at boot
 scripts/mkinitramfs.py  packs initramfs/ and the user programs into build/initramfs.tar (USTAR)
 scripts/boot-test.sh    headless QEMU boot test used by `make test` and CI (also types keys and checks a screendump)
 scripts/ktest.sh        runs the unit-test kernel in QEMU for `make test-kernel`: TAP on serial, pass/fail through isa-debug-exit
+scripts/net-test.py     `make test-net`: a DHCP server and a pinging neighbour on the other end of QEMU's network card
 scripts/bdf2psf.py      turns a BDF font into the PSF2 file the console uses
 scripts/write-usb.sh    safely write the ISO to a USB stick
 vendor/limine           Limine 11.4.1 bootloader binaries (BSD-2-Clause)

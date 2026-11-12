@@ -17,6 +17,12 @@
 #define SYS_dup2          33 // dup2(fd, newfd): newfd (closed first if open) on the same open file
 #define SYS_nanosleep     35 // nanosleep(const struct timespec *req, struct timespec *rem)
 #define SYS_getpid        39 // getpid()
+#define SYS_socket        41 // socket(domain, type, protocol): AF_INET; TCP, UDP or ping sockets (socket.h)
+#define SYS_connect       42 // connect(fd, addr, len)
+#define SYS_sendto        44 // sendto(fd, buf, len, flags, addr, len)
+#define SYS_recvfrom      45 // recvfrom(fd, buf, len, flags, addr, int *len)
+#define SYS_bind          49 // bind(fd, addr, len)
+#define SYS_setsockopt    54 // setsockopt(fd, level, name, value, len): SO_RCVTIMEO, SO_SNDTIMEO
 #define SYS_exit          60 // exit(status): ends the process
 #define SYS_wait4         61 // wait4(pid, int *status, options, rusage): waitpid (proc.h); rusage must be NULL
 #define SYS_getppid       110 // getppid(): 0 for a process the kernel started

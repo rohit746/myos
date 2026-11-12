@@ -140,6 +140,26 @@ char *strerror(int err) {
     case ENAMETOOLONG: return "File name too long";
     case ENOSYS: return "Function not implemented";
     case ENOTEMPTY: return "Directory not empty";
+    case EAGAIN: return "Resource temporarily unavailable";
+    case EPIPE: return "Broken pipe";
+    case ENOTSOCK: return "Socket operation on non-socket";
+    case EDESTADDRREQ: return "Destination address required";
+    case EMSGSIZE: return "Message too long";
+    case EPROTOTYPE: return "Protocol wrong type for socket";
+    case ENOPROTOOPT: return "Protocol not available";
+    case EPROTONOSUPPORT: return "Protocol not supported";
+    case ESOCKTNOSUPPORT: return "Socket type not supported";
+    case EOPNOTSUPP: return "Operation not supported";
+    case EAFNOSUPPORT: return "Address family not supported by protocol";
+    case EADDRINUSE: return "Address already in use";
+    case EADDRNOTAVAIL: return "Cannot assign requested address";
+    case ENETUNREACH: return "Network is unreachable";
+    case ECONNRESET: return "Connection reset by peer";
+    case EISCONN: return "Transport endpoint is already connected";
+    case ENOTCONN: return "Transport endpoint is not connected";
+    case ETIMEDOUT: return "Connection timed out";
+    case ECONNREFUSED: return "Connection refused";
+    case EHOSTUNREACH: return "No route to host";
     default: return "Unknown error";
     }
 }

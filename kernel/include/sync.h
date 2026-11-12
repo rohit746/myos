@@ -134,6 +134,9 @@ void cond_init(struct condvar *c);
 // Unlock `m` (which the caller holds), sleep until signalled, lock `m`
 // again. Wake-ups can be spurious: wait in a loop that checks the condition.
 void cond_wait(struct condvar *c, struct mutex *m);
+// The same, but give up at `deadline_ns` (clock_monotonic_ns()): false if
+// the deadline passed before a signal came. `m` is held again either way.
+bool cond_wait_until(struct condvar *c, struct mutex *m, uint64_t deadline_ns);
 void cond_signal(struct condvar *c);    // wake one waiter
 void cond_broadcast(struct condvar *c); // wake them all
 

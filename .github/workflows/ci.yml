@@ -46,6 +46,9 @@ jobs:
       - name: Kernel unit tests (KTEST)
         run: make test-kernel EXTRA_CFLAGS=-Werror
 
+      - name: Network test (DHCP, ARP, ping, closed ports)
+        run: make test-net
+
       - name: Upload ISO and logs
         if: always()
         uses: actions/upload-artifact@v7.0.2
