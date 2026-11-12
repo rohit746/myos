@@ -4,6 +4,12 @@
 // register it; everything else reads and writes through block_read() and
 // block_write(), whatever the disk is attached to.
 //
+// Each partition of a disk (partition_scan: MBR or GPT) is a block device
+// too, "sda1" or "nvme0n1p1", whose sectors are a range of its disk's.
+//
+// Filesystems read and write through the block cache (bcache_read and
+// bcache_write), which keeps recently used sectors in memory.
+//
 // Buffers are ordinary kernel memory (heap, stack, HHDM) of any alignment:
 // a driver copies through its own DMA memory where it has to.
 
@@ -28,6 +34,10 @@ struct block_device {
     uint64_t sector_count;
     const struct block_ops *ops;
     void *priv; // the driver's
+    // A partition: the disk it is on, and its first sector there. NULL and 0
+    // for a whole disk.
+    struct block_device *parent;
+    uint64_t start;
 };
 
 // Add a disk. Its name must be unique. The device must stay in memory.
@@ -42,9 +52,38 @@ struct block_device *block_find(const char *name);
 
 // Read or write `count` sectors at `lba`: 0, or a negative errno (-EINVAL
 // for a range past the end of the disk or a count of 0, -EIO when the disk
-// reports an error or doesn't answer). May sleep.
+// reports an error or doesn't answer). May sleep. These go straight to the
+// disk; a write also drops the sectors it wrote from the block cache.
 int block_read(struct block_device *dev, uint64_t lba, uint32_t count, void *buf);
 int block_write(struct block_device *dev, uint64_t lba, uint32_t count, const void *buf);
+
+// Read the partition table of every whole disk (a GPT, else an MBR with
+// its logical partitions) and register each partition as a block device:
+// sda1, sda2, ... (nvme0n1p1 when the disk's name ends in a digit),
+// numbered as Linux numbers them. A line for the boot log in `line`
+// (empty when no disk has partitions). False if a table was there but
+// broken, with the reason.
+bool partition_scan(char *line, size_t size);
+
+// ---------------------------------------------------------------------------
+// Block cache
+// ---------------------------------------------------------------------------
+//
+// The last BCACHE_SECTORS sectors read or written, whatever disk they are
+// on, kept by the whole disk (a partition's sectors are its disk's).
+// Reads that miss read ahead a little. Writes go to the disk before the
+// call returns (write-through), so nothing is lost if the machine goes off
+// and there is nothing to flush. Same arguments and errors as block_read and
+// block_write; one lock covers the cache, held across the disk access.
+
+#define BCACHE_SECTORS 1024
+#define BCACHE_READ_AHEAD 32 // sectors read on a miss, if the disk has them
+
+int bcache_read(struct block_device *dev, uint64_t lba, uint32_t count, void *buf);
+int bcache_write(struct block_device *dev, uint64_t lba, uint32_t count, const void *buf);
+
+// Forget any cached copies of these sectors (block_write calls it).
+void bcache_forget(struct block_device *dev, uint64_t lba, uint32_t count);
 
 // A disk whose first sector starts with this text is a scratch disk the
 // boot self-test may write to (`make test` gives QEMU one). Sector s, for

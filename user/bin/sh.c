@@ -128,10 +128,11 @@ static int split(char *s, char **argv, int max) {
     }
 }
 
-// Run the program for argv[0] with stdout sent to `out_path` (if not NULL),
-// and wait for it. False if argv[0] is a bare word and /bin has no such
-// program, so the caller can try a kernel command.
-static bool run_program(char **argv, const char *out_path) {
+// Run the program for argv[0] with stdout sent to `out_path` (if not NULL;
+// added to its end with `append`), and wait for it. False if argv[0] is a
+// bare word and /bin has no such program, so the caller can try a kernel
+// command.
+static bool run_program(char **argv, const char *out_path, bool append) {
     bool is_path = strchr(argv[0], '/') != NULL;
     char path[PATH_MAX];
     snprintf(path, sizeof path, is_path ? "%s" : "/bin/%s", argv[0]);
@@ -140,7 +141,7 @@ static bool run_program(char **argv, const char *out_path) {
     // at the file while it starts, and put it back afterwards.
     int saved = -1;
     if (out_path) {
-        int fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC);
+        int fd = open(out_path, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC));
         if (fd < 0) {
             printf("%s: %s\n", out_path, strerror(errno));
             return true;
@@ -176,7 +177,7 @@ static void help(void) {
     char *argv[] = {"help", NULL};
     kernel_command(argv);
     printf("The shell's own: help, exit [status] (init then starts a new shell).\n"
-           "`program args > file` sends what the program prints to the file.\n"
+           "`program args > file` sends what the program prints to the file; `>> file` adds it to the end.\n"
            "Keys: Left/Right, Home/End, Backspace/Delete, Up/Down for the history, Ctrl+C drops the line,\n"
            "Ctrl+U deletes to its start, Ctrl+L clears the screen.\n");
 }
@@ -188,18 +189,23 @@ static void run(char *s) {
         printf("too many words (at most %d)\n", MAX_ARGS);
         return;
     }
-    // Take out `> file` (or `>file`).
+    // Take out `> file` or `>> file` (or `>file`, `>>file`).
     const char *out_path = NULL;
+    bool append = false;
     int n = 0;
     for (int i = 0; i < argc; i++) {
         if (argv[i][0] != '>') {
             argv[n++] = argv[i];
-        } else if (argv[i][1]) {
-            out_path = argv[i] + 1;
+            continue;
+        }
+        append = argv[i][1] == '>';
+        const char *rest = argv[i] + 1 + append;
+        if (*rest) {
+            out_path = rest;
         } else if (i + 1 < argc) {
             out_path = argv[++i];
         } else {
-            printf("sh: `>` needs a file name\n");
+            printf("sh: `%s` needs a file name\n", append ? ">>" : ">");
             return;
         }
     }
@@ -211,7 +217,7 @@ static void run(char *s) {
         help();
     } else if (strcmp(argv[0], "exit") == 0) {
         exit(argc > 1 ? atoi(argv[1]) : 0);
-    } else if (!run_program(argv, out_path)) {
+    } else if (!run_program(argv, out_path, append)) {
         if (out_path) printf("%s: `>` only works for programs; kernel commands print to the console\n", argv[0]);
         else if (kernel_command(argv) < 0) printf("%s: unknown command; `help` lists them\n", argv[0]);
     }

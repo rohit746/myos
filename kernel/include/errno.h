@@ -24,6 +24,7 @@
 #define EROFS        30
 #define ENAMETOOLONG 36
 #define ENOSYS       38
+#define ENOTEMPTY    39
 
 #ifndef __ASSEMBLER__
 // A short description: "No such file or directory". `err` may be negated.

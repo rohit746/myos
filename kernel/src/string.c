@@ -72,6 +72,7 @@ const char *strerror(int err) {
     case EROFS: return "Read-only file system";
     case ENAMETOOLONG: return "File name too long";
     case ENOSYS: return "Function not implemented";
+    case ENOTEMPTY: return "Directory not empty";
     default: return "Unknown error";
     }
 }

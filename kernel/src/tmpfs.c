@@ -117,6 +117,22 @@ static int tmpfs_readdir(struct vnode *dir, uint64_t index, struct vfs_dirent *o
     return 0;
 }
 
+static int tmpfs_unlink(struct vnode *dir, const char *name) {
+    struct tmpfs_node *d = node(dir), *prev = NULL, *c = d->children;
+    while (c && strcmp(c->name, name) != 0) {
+        prev = c;
+        c = c->next;
+    }
+    if (c == NULL) return -ENOENT;
+    if (c->children) return -ENOTEMPTY;
+    if (prev) prev->next = c->next;
+    else d->children = c->next;
+    if (d->last_child == c) d->last_child = prev;
+    dir->size--;
+    tmpfs_free(&c->vnode);
+    return 0;
+}
+
 static const struct vnode_ops tmpfs_ops = {
     .fs_name = "tmpfs",
     .read = tmpfs_read,
@@ -125,6 +141,7 @@ static const struct vnode_ops tmpfs_ops = {
     .lookup = tmpfs_lookup,
     .create = tmpfs_create,
     .readdir = tmpfs_readdir,
+    .unlink = tmpfs_unlink,
 };
 
 struct vnode *tmpfs_new(void) {

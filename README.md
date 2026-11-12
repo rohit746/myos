@@ -6,8 +6,9 @@ bootloader, from UEFI or legacy BIOS.
 
 ## Build and run
 
-Requirements (macOS, Homebrew): `clang` (Xcode), `brew install lld qemu xorriso`.
-On Linux, install `clang lld qemu-system-x86 ovmf xorriso`.
+Requirements (macOS, Homebrew): `clang` (Xcode), `brew install lld qemu xorriso mtools dosfstools`.
+On Linux, install `clang lld qemu-system-x86 ovmf xorriso mtools dosfstools`
+(mtools and dosfstools only for `make test`, which builds and checks a FAT32 disk).
 
 ```sh
 make            # build/myos.iso
@@ -52,9 +53,16 @@ built from (`git describe`).
    starts `/bin/init`, which starts the shell, `/bin/sh`, and you get a
    `myos>` prompt. `help` lists the shell's commands. `lspci -n` prints
    the PCI devices in the same format as Linux's `lspci -n`, so the two can
-   be compared line by line. `disk` lists the SATA and NVMe disks, `disk read sda 0`
+   be compared line by line. `disk` lists the SATA and NVMe disks and their
+   partitions (MBR or GPT), `disk read sda 0`
    prints a sector, and `disk test sda <sector>` writes one, reads it back
-   and puts back what was there (try it on a scratch disk).
+   and puts back what was there (try it on a scratch disk). Every FAT12,
+   FAT16 or FAT32 partition is mounted on `/mnt/<partition>` (`mount` lists
+   them), for example a PC's EFI system partition on `/mnt/nvme0n1p1`:
+   `ls`, `cat`, `crc32`, `mkdir`, `rm`, and `echo text > file` or `>> file`
+   work there, and writes go straight to the disk. USB sticks need a USB
+   storage driver, which isn't written yet; `make test` reads the ISO's EFI
+   partition by attaching the image as a SATA disk.
 
 Most PCs have no serial port, so on real hardware everything shows on the
 screen. If the machine crashes you get a red crash screen with the
@@ -83,6 +91,10 @@ kernel/src/pci_test.c   PCI self-test: QEMU's edu and igb devices raise an MSI a
 kernel/src/ahci.c       AHCI (SATA) driver: BIOS/OS handoff, HBA reset, COMRESET, IDENTIFY, READ/WRITE DMA EXT, MSI completion
 kernel/src/nvme.c       NVMe driver: controller reset and enable, admin and I/O queues, IDENTIFY, READ/WRITE with PRP lists, MSI-X completion
 kernel/src/block.c      block devices: block_read/block_write for every disk driver, the disk self-test, `disk`
+kernel/src/bcache.c     block cache: recently used sectors in memory (LRU, write-through, read-ahead)
+kernel/src/part.c       partition tables: GPT (CRC-checked) and MBR with logical partitions; each partition a block device
+kernel/src/fat.c        FAT12/16/32: long names, read and write (create, append, truncate, delete), mounted on /mnt, `mount`
+kernel/src/crc32.c      CRC-32 (GPT checksums, the `crc32` command)
 kernel/src/time.c       timer calibration (HPET / PM timer / PIT), 1000 Hz tick, monotonic clock, sleep_ms
 kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1, LEDs
 kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue
@@ -90,7 +102,7 @@ kernel/src/shell.c      kernel shell: the command table (mem, ps, reboot, ...) /
 kernel/src/sched.c      kernel threads, round-robin preemptive scheduler, sleep, idle thread
 kernel/src/switch.S     switch_context: swaps kernel stacks between threads
 kernel/src/sync.c       spinlocks, wait queues, mutexes, semaphores, condition variables, lock debug checks
-kernel/src/vfs.c        VFS: vnodes with an operations table, path lookup, mounts, refcounted open files, open/read/write/readdir/stat/mkdir
+kernel/src/vfs.c        VFS: vnodes with an operations table, path lookup, mounts, refcounted open files, open/read/write/readdir/stat/mkdir/unlink
 kernel/src/tmpfs.c      tmpfs: files and directories in RAM (the root filesystem)
 kernel/src/devfs.c      devfs on /dev: console (keys in, raw), null, zero
 kernel/src/proc.c       user processes: own address spaces, ring 3, argv/envp/auxv, fd tables, spawn/waitpid with zombies and orphans, killed on a fault
@@ -110,7 +122,7 @@ user/crt0.S             _start: hands the stack the kernel set up to __libc_star
 user/linker.ld          user memory layout (programs at 0x400000)
 user/libc/              tiny libc: syscall wrappers (files, spawn, waitpid), printf, string functions, malloc over mmap, getenv, getauxval
 user/bin/init.c         /bin/init, the first program the kernel runs: checks the libc, files and processes, then runs /bin/sh
-user/bin/sh.c           /bin/sh, the shell: line editor, history, runs programs as children and waits, `> file`
+user/bin/sh.c           /bin/sh, the shell: line editor, history, runs programs as children and waits, `> file`, `>> file`
 user/bin/echo.c         /bin/echo
 user/bin/cat.c          /bin/cat
 user/bin/crash.c        /bin/crash: writes to address 0, to show a crash only kills the program

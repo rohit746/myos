@@ -394,6 +394,9 @@ void kmain(void) {
     if (pci_self_test(line, sizeof line)) ok(line);
     else warn_line(line);
 
+    if (!partition_scan(line, sizeof line)) warn_line(line);
+    else if (line[0]) ok(line);
+
     if (!block_self_test(line, sizeof line)) warn_line(line);
     else if (line[0]) ok(line);
 
@@ -407,6 +410,9 @@ void kmain(void) {
     if (initramfs == NULL) warn_line("initramfs: no module called \"initramfs\" (limine.conf); / is empty");
     else if (initramfs_unpack(initramfs->address, initramfs->size, line, sizeof line)) ok(line);
     else warn_line(line);
+
+    if (!fat_mount_all(line, sizeof line)) warn_line(line);
+    else if (line[0]) ok(line);
 
     syscall_init(line, sizeof line);
     ok(line);
