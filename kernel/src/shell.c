@@ -552,7 +552,9 @@ static void cmd_poweroff(int argc, char **argv) {
     kprintf("poweroff: the machine is still on; turn it off by hand\n");
 }
 
-SHELL_COMMAND(panic, "[fault]", "crash on purpose: a kernel panic, or a page fault for the crash screen");
+SHELL_COMMAND(panic, "[fault|frame|nested]",
+              "crash on purpose: a kernel panic, a page fault for the crash screen, the same with a corrupt "
+              "frame pointer, or a page fault inside the panic");
 static void cmd_panic(int argc, char **argv) {
     if (argc == 1) panic("panic command");
     if (argc == 2 && strcmp(argv[1], "fault") == 0) {
@@ -561,5 +563,17 @@ static void cmd_panic(int argc, char **argv) {
         kprintf("panic: the write did not fault\n");
         return;
     }
-    kprintf("usage: panic [fault]\n");
+    if (argc == 2 && strcmp(argv[1], "frame") == 0) {
+        // The backtrace starts at a frame pointer to an unmapped kernel
+        // address, as after a stack overflow or corruption. The fault never
+        // returns, so the clobbered %rbp is never used.
+        kprintf("writing to an unmapped address with a corrupt frame pointer...\n");
+        __asm__ volatile("movq %0, %%rbp\n\tmovq $42, (%1)\n\tud2"
+                         : : "r"(0xffffff7f00000000ull), "r"(0xdeadbeef000ull) : "memory");
+    }
+    if (argc == 2 && strcmp(argv[1], "nested") == 0) {
+        // Printing the panic's message page-faults: a crash inside the panic.
+        panic("panic command: %s", (const char *)0xdeadbeef000);
+    }
+    kprintf("usage: panic [fault|frame|nested]\n");
 }

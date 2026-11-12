@@ -69,8 +69,8 @@ built from (`git describe`).
 
 Most PCs have no serial port, so on real hardware everything shows on the
 screen. If the machine crashes you get a red crash screen with the
-exception, registers and a backtrace. Photograph it, then turn the
-addresses into source lines with:
+exception, registers and a backtrace that names the functions
+(`kmain+0x1a3`). Photograph it; to get from an address to a source line, use:
 
 ```sh
 llvm-symbolizer --obj=build/kernel.elf 0xffffffff80001234
@@ -84,6 +84,7 @@ kernel/src/entry.S      _start: first instruction the kernel runs
 kernel/src/main.c       kmain + the requests that ask Limine for info
 kernel/src/gdt.c        segment descriptors + TSS (stacks for interrupts), one of each per CPU, and per-CPU data through GS
 kernel/src/idt.c        interrupt table, exception handling, crash screen
+kernel/src/backtrace.c  symbolize() and backtraces, from the symbol table scripts/mksyms.py links in
 kernel/src/isr.S        256 interrupt entry stubs
 kernel/src/pmm.c        physical page allocator (bitmap)
 kernel/src/vmm.c        the kernel's own page tables, vmm_map/vmm_unmap

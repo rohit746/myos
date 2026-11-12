@@ -56,6 +56,12 @@ SECTIONS
         ktests_start = .;
         KEEP(*(.ktests))
         ktests_end = .;
+
+        /* The symbol table for backtraces (backtrace.h), last: the Makefile
+         * links the kernel once without it, and adding it must not move
+         * anything it lists. */
+        . = ALIGN(8);
+        KEEP(*(.ksyms))
     } :rodata
     rodata_end = .;
 

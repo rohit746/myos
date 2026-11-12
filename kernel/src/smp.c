@@ -130,12 +130,15 @@ static uint32_t cpuid_apic_id(void) {
     return b >> 24;
 }
 
-void smp_panic_begin(void) {
+unsigned smp_panic_begin(void) {
+    // Only the panicking CPU gets past the compare-exchange to touch it.
+    static unsigned depth;
     uint32_t me = cpuid_apic_id(), first = UINT32_MAX;
     if (!__atomic_compare_exchange_n(&panic_apic_id, &first, me, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        if (first == me) return; // a panic while printing this CPU's panic: carry on
-        halt_forever();          // another CPU is panicking: let it speak
+        if (first == me) return ++depth; // a panic while printing this CPU's panic
+        halt_forever();                  // another CPU is panicking: let it speak
     }
+    depth = 1;
     stopping = true;
     kprintf_break_lock();
     unsigned others = 0;
@@ -146,6 +149,7 @@ void smp_panic_begin(void) {
     }
     // Give them a moment to stop, so nothing else reaches the screen.
     for (uint64_t spins = 0; stopped < others && spins < 100000000; spins++) pause();
+    return depth;
 }
 
 // The NMI from smp_panic_begin (idt.c sends it here).

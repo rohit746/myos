@@ -1,6 +1,7 @@
 // Interrupt Descriptor Table, plus the C side of interrupt handling.
 
 #include <arch.h>
+#include <backtrace.h>
 #include <console.h>
 #include <cpu.h>
 #include <kprintf.h>
@@ -74,23 +75,23 @@ void idt_set_handler(uint8_t vector, interrupt_handler_t handler) {
 
 const char *exception_name(uint64_t vector) { return vector < 32 ? exception_names[vector] : "Interrupt"; }
 
-// Walk the chain of saved frame pointers (the kernel is built with
-// -fno-omit-frame-pointer) and print return addresses.
-static void backtrace(uint64_t rbp) {
-    kprintf("  backtrace:\n");
-    for (int depth = 0; depth < 16; depth++) {
-        if (rbp == 0 || (rbp & 7) || rbp < 0xffff800000000000) break;
-        uint64_t *frame = (uint64_t *)rbp;
-        uint64_t ret = frame[1];
-        if (ret == 0) break;
-        kprintf("    #%d %p\n", depth, (void *)ret);
-        rbp = frame[0];
-    }
-}
-
 static void __attribute__((noreturn)) exception_panic(struct interrupt_frame *f) {
     cli();
-    smp_panic_begin();
+    // The crash screen (or a panic) faulted: say where, briefly, and stop
+    // before it can fault again. Past that, just stop.
+    unsigned depth = smp_panic_begin();
+    if (depth > 2) halt_forever();
+    // Where it happened, as " <function+0x...>" after rip.
+    char where[80] = "";
+    uint64_t offset;
+    const char *name = symbolize(f->rip, &offset);
+    if (name) ksnprintf(where, sizeof where, " <%s+0x%lx>", name, offset);
+    if (depth == 2) {
+        kprintf("\n" ANSI_PANIC " *** CPU EXCEPTION %lu: %s inside the crash screen *** " ANSI_RESET "\n",
+                f->vector, exception_names[f->vector]);
+        kprintf("  rip=%p%s\n\n  System halted.\n", (void *)f->rip, where);
+        halt_forever();
+    }
     kprintf("\n" ANSI_PANIC " *** CPU EXCEPTION %lu: %s *** " ANSI_RESET "\n", f->vector, exception_names[f->vector]);
 
     kprintf("  error code: 0x%lx\n", f->error_code);
@@ -102,14 +103,14 @@ static void __attribute__((noreturn)) exception_panic(struct interrupt_frame *f)
                 e & 4 ? "user mode" : "kernel mode",
                 e & 16 ? ", instruction fetch" : "");
     }
-    kprintf("  rip=%p cs=%04lx rflags=%016lx\n", (void *)f->rip, f->cs, f->rflags);
+    kprintf("  rip=%p%s cs=%04lx rflags=%016lx\n", (void *)f->rip, where, f->cs, f->rflags);
     kprintf("  rsp=%p ss=%04lx\n", (void *)f->rsp, f->ss);
     kprintf("  rax=%016lx rbx=%016lx rcx=%016lx rdx=%016lx\n", f->rax, f->rbx, f->rcx, f->rdx);
     kprintf("  rsi=%016lx rdi=%016lx rbp=%016lx\n", f->rsi, f->rdi, f->rbp);
     kprintf("  r8 =%016lx r9 =%016lx r10=%016lx r11=%016lx\n", f->r8, f->r9, f->r10, f->r11);
     kprintf("  r12=%016lx r13=%016lx r14=%016lx r15=%016lx\n", f->r12, f->r13, f->r14, f->r15);
     kprintf("  cr0=%016lx cr3=%016lx cr4=%016lx\n", read_cr0(), read_cr3(), read_cr4());
-    backtrace(f->rbp);
+    backtrace_print(f->rip, f->rbp);
     kprintf("\n  System halted.\n");
     halt_forever();
 }

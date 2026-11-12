@@ -29,5 +29,6 @@ void kprintf_release(bool held);
 // stopped the others, one of which may have been printing (smp.c).
 void kprintf_break_lock(void);
 
-// Print a message with a red banner and stop the machine (every CPU).
+// Print a message with a red banner and a backtrace (backtrace.h), and stop
+// the machine (every CPU).
 __attribute__((noreturn, format(printf, 1, 2))) void panic(const char *fmt, ...);
