@@ -18,6 +18,10 @@
 // (vfs_unlink). They have no reference counts: a file that is open, or a
 // directory something is mounted on, can't be deleted (-EBUSY).
 //
+// Sockets (socket.c) are vnodes too, of their own type, in no filesystem
+// and with no path: vfs_open_vnode() opens one, and the last vfs_close
+// calls its release operation, which frees it.
+//
 // Open files live in one table for the whole kernel (VFS_MAX_FILES), and a
 // file number is an index into it. Each process has its own table of file
 // descriptors that point into this one (proc.h); several descriptors, in
@@ -50,7 +54,7 @@
 #define O_TRUNC   01000 // empty the file (when opened for writing)
 #define O_APPEND  02000 // every write goes to the end of the file
 
-enum vnode_type { VNODE_FILE, VNODE_DIR, VNODE_CHARDEV };
+enum vnode_type { VNODE_FILE, VNODE_DIR, VNODE_CHARDEV, VNODE_SOCKET };
 
 struct vnode;
 
@@ -88,6 +92,10 @@ struct vnode_ops {
     // Delete the entry `name`, which exists and is neither open nor mounted
     // on, and free its vnode. A directory must be empty (-ENOTEMPTY).
     int (*unlink)(struct vnode *dir, const char *name);
+
+    // A vnode in no filesystem (a socket): the last open file on it was
+    // closed. Called without the VFS lock.
+    void (*release)(struct vnode *v);
 };
 
 struct vnode {
@@ -111,8 +119,17 @@ int vfs_mount(const char *path, struct vnode *root);
 // reference. Directories open only read-only.
 int vfs_open(const char *path, int flags);
 
+// Open `v`, which is in no filesystem (a socket), as a new file with one
+// reference. -EMFILE if the table is full.
+int vfs_open_vnode(struct vnode *v, int flags);
+
 // One more reference to an open file: one more vfs_close before it closes.
 int vfs_hold(int fd);
+
+// The same, and return the file's vnode (NULL for a bad file number): the
+// file can't close under the caller, who drops the reference with
+// vfs_close when done.
+struct vnode *vfs_hold_vnode(int fd);
 
 // Read or write at the file's offset, and move it past what was moved.
 int64_t vfs_read(int fd, void *buf, size_t size);

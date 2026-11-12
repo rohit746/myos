@@ -43,7 +43,12 @@
 #          address and the shell carries on; programs run as children of
 #          the shell: `/bin/echo` and `init`, `echo ... > file` writes the
 #          file, `crash` gets killed and the shell says so and carries on,
-#          and files that aren't programs are refused), `clear` blanks the
+#          and files that aren't programs are refused), the network card
+#          got 10.0.2.15 from QEMU's DHCP server, and over it `ping` gets
+#          replies from the gateway (and from 127.0.0.1), `host` looks a
+#          name up in a DNS server this script runs, `fetch` downloads a
+#          file from this script's web server whole (its CRC-32 checked)
+#          and a closed port refuses it, `clear` blanks the
 #          screen and `reboot` resets the machine (QEMU exits: -no-reboot);
 #          fail on any panic, exception or unhandled interrupt
 #          With QEMU_USB=1, QEMU also gets an xHCI controller with a USB
@@ -102,6 +107,7 @@ fat_marker="FAT12 on /mnt/sdb2, FAT32 on /mnt/sdc1"
 initramfs_marker="initramfs: unpacked"
 syscall_marker="system calls via syscall/sysret"
 user_marker="user mode self-test passed"
+net_marker="network: eth0 10.0.2.15/24 from DHCP server 10.0.2.2, gateway 10.0.2.2, DNS 10.0.2.3"
 init_marker="init: libc self-test passed"
 sh_marker="init: started /bin/sh"
 kbd_marker="PS/2 keyboard ready"
@@ -116,6 +122,43 @@ big_file() { python3 -I -c 'import sys; sys.stdout.buffer.write(bytes((i * 7 + i
 efi_offset() { python3 -I -c 'import struct, sys; print(struct.unpack_from("<I", open(sys.argv[1], "rb").read(512), 462 + 8)[0] * 512)' "$1"; }
 big_crc=$(big_file | crc32_of)
 efi_crc=$( [[ -f "$iso" ]] && mtype -i "$iso@@$(efi_offset "$iso")" ::/EFI/BOOT/BOOTX64.EFI | crc32_of)
+
+# Servers on this machine for the network commands, which reach it as
+# 10.0.2.2 through QEMU's user network: a web server for `fetch` (big.bin is
+# big_file), and a DNS server for `host` that says every name under
+# myos.test is 10.0.2.2. Their ports go in $log.ports.
+mkdir -p "$(dirname "$log")"
+www="$log.www"
+rm -rf "$www" "$log.ports" && mkdir -p "$www" && big_file > "$www/big.bin"
+python3 -I - "$www" "$log.ports" <<'PY' &
+import functools, http.server, socket, struct, sys, threading
+class Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args): pass
+web = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=sys.argv[1]))
+dns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+dns.bind(("127.0.0.1", 0))
+with open(sys.argv[2] + ".tmp", "w") as f:
+    f.write("%d %d\n" % (web.server_address[1], dns.getsockname()[1]))
+import os; os.rename(sys.argv[2] + ".tmp", sys.argv[2])
+threading.Thread(target=web.serve_forever, daemon=True).start()
+while True:
+    q, peer = dns.recvfrom(512)
+    i, labels = 12, []
+    while i < len(q) and q[i]:
+        labels.append(q[i + 1:i + 1 + q[i]].decode(errors="replace"))
+        i += 1 + q[i]
+    question = q[12:i + 5]
+    if ".".join(labels).endswith("myos.test"):
+        reply = q[:2] + b"\x81\x80" + struct.pack(">HHHH", 1, 1, 0, 0) + question
+        reply += b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + bytes([10, 0, 2, 2])
+    else:
+        reply = q[:2] + b"\x81\x83" + struct.pack(">HHHH", 1, 0, 0, 0) + question
+    dns.sendto(reply, peer)
+PY
+servers=$!
+trap 'kill $servers 2>/dev/null' EXIT
+for (( i = 0; i < 50; i++ )); do [[ -f "$log.ports" ]] && break; sleep 0.1; done
+read -r http_port dns_port < "$log.ports" || { echo "boot-test: the web and DNS servers did not start"; exit 2; }
 
 # Keys to type: QEMU sendkey names, or "=text" for the keys that type text.
 # Each line runs `echo`, so what it prints is what the editing produced.
@@ -141,7 +184,10 @@ commands=(help uptime mem cpu acpi ps threads lspci "lspci -n" "lspci -v" disk d
           "/bin/cat /mnt/sdc1/big.bin > /mnt/sdc1/copy.bin" "crc32 /mnt/sdc1/copy.bin" "mkdir /mnt/sdc1/New-dir"
           "echo inside > /mnt/sdc1/new-dir/inside.txt" "rm /mnt/sdc1/new-dir" "rm /mnt/sdc1/HELLO.TXT"
           "stat /mnt/sdc1/hello.txt" "rm /mnt/sdc1/many/file7.txt" "stat /mnt/sdc1/many" "rm /mnt/sdc1/LONGER~1.TXT"
-          crash "echo still here")
+          crash "echo still here"
+          net "cat /etc/resolv.conf" "ping -c 2 10.0.2.2" "ping -c 1 127.0.0.1" "host www.myos.test 10.0.2.2:$dns_port"
+          "host nope.example 10.0.2.2:$dns_port" "fetch http://10.0.2.2:$http_port/big.bin > /big.bin" "crc32 /big.bin"
+          "fetch http://10.0.2.2:1/")
 outputs=("^  reboot +restart the machine"
          "^up [0-9]+:[0-9]{2}:[0-9]{2} \([0-9]+\.[0-9]{3} s, [0-9]+ ticks at 1000 Hz\)"
          "^physical: [0-9]+ MiB managed"
@@ -202,7 +248,16 @@ outputs=("^  reboot +restart the machine"
          "^/mnt/sdc1/many: directory, 39 entries, inode [0-9]+ on fat32"
          ""
          "^crash: killed by signal 11 \(segmentation fault\)"
-         "^still here")
+         "^still here"
+         "^  inet 10\.0\.2\.15/24, gateway 10\.0\.2\.2, DNS 10\.0\.2\.3"
+         "^nameserver 10\.0\.2\.3"
+         "^2 packets transmitted, 2 received, 0% packet loss"
+         "^1 packets transmitted, 1 received, 0% packet loss"
+         "^www\.myos\.test has address 10\.0\.2\.2"
+         "^host: nope\.example: no such host"
+         ""
+         "^$big_crc 100000 /big\.bin"
+         "^fetch: connect to 10\.0\.2\.2 \(10\.0\.2\.2\) port 1: Connection refused")
 # With USB: commands starting with @ go to QEMU's monitor instead.
 if [[ -n "${QEMU_USB:-}" ]]; then
     commands+=(lsusb lsusb
@@ -226,7 +281,7 @@ crash_bt_re="^ +#0 0x[0-9a-f]+ kmain\+0x[0-9a-f]+"
 panic_bt_re="^ +#0 0x[0-9a-f]+ cmd_panic\+0x[0-9a-f]+"
 frame_bt_re="^ +stopped: frame pointer 0xffffff7f00000000 is not mapped"
 nested_marker="CPU EXCEPTION 14: Page fault inside the crash screen"
-fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PCI|AHCI|NVMe|disk|partitions|FAT|PS/2|xHCI|usb[0-9]|/bin/init)|init: (check failed|can.t start)"
+fail_re="KERNEL PANIC|CPU EXCEPTION|unhandled interrupt|\\[warn\\] (IRQ|timer|PCI|AHCI|NVMe|disk|partitions|FAT|PS/2|xHCI|usb[0-9]|e1000|/bin/init)|init: (check failed|can.t start)"
 
 [[ -f "$iso" ]] || { echo "boot-test: $iso not found"; exit 2; }
 mkdir -p "$(dirname "$log")"
@@ -344,16 +399,16 @@ fi
 
 qemu-system-x86_64 "${args[@]}" 2>"$log.qemu" &
 qemu=$!
-trap 'kill $qemu 2>/dev/null; wait $qemu 2>/dev/null; rm -f "$monitor"' EXIT
+trap 'kill $qemu $servers 2>/dev/null; wait $qemu 2>/dev/null; rm -f "$monitor"' EXIT
 
 # Press keys through the QEMU monitor; each one is held for 100 ms. An
-# argument "=text" types the text (letters, digits, space and , . / - ! > ~);
+# argument "=text" types the text (letters, digits, space and , . / - ! > ~ :);
 # "@command" runs a monitor command.
 send_keys() {
     python3 -I - "$monitor" "$@" <<'PY'
 import socket, sys, time
 names = {" ": "spc", ",": "comma", ".": "dot", "/": "slash", "-": "minus", "!": "shift-1", ">": "shift-dot",
-         "~": "shift-grave_accent"}
+         "~": "shift-grave_accent", ":": "shift-semicolon"}
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
 for arg in sys.argv[2:]:
@@ -521,6 +576,7 @@ while (( SECONDS - start < timeout_s )); do
             elif ! grep -Fq "$initramfs_marker" "$log"; then result=initramfs
             elif ! grep -Fq "$syscall_marker" "$log"; then result=syscall
             elif ! grep -Fq "$user_marker" "$log"; then result=user
+            elif ! grep -Fq "$net_marker" "$log"; then result=net
             elif ! grep -Fq "$kbd_marker" "$log"; then result=kbd
             elif [[ -n "${QEMU_USB:-}" ]] && ! grep -Fq "$usb_marker" "$log"; then result=usb
             elif ! wait_for "$init_marker" || ! wait_for "$sh_marker"; then result=init
@@ -605,6 +661,7 @@ fatimage) echo "FAIL $label the FAT32 disk image does not hold what the shell di
 initramfs) echo "FAIL $label the initramfs was not unpacked (\"$initramfs_marker\"):" ;;
 syscall) echo "FAIL $label system calls were not set up (\"$syscall_marker\"):" ;;
 user)    echo "FAIL $label user programs did not pass their self-test (\"$user_marker\"):" ;;
+net)     echo "FAIL $label the network card did not get its address from QEMU's DHCP server (\"$net_marker\"):" ;;
 init)    echo "FAIL $label /bin/init did not pass its self-test and start the shell (\"$init_marker\", \"$sh_marker\"):" ;;
 kbd)     echo "FAIL $label no PS/2 keyboard (\"$kbd_marker\"):" ;;
 usb)     echo "FAIL $label the USB keyboards are not ready (\"$usb_marker\"):" ;;

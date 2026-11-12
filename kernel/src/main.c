@@ -14,6 +14,7 @@
 #include <ktest.h>
 #include <limine.h>
 #include <memory.h>
+#include <net.h>
 #include <pci.h>
 #include <pmm.h>
 #include <proc.h>
@@ -420,6 +421,11 @@ void kmain(void) {
 
     if (!fat_mount_all(line, sizeof line)) warn_line(line);
     else if (line[0]) ok(line);
+
+    // DHCP: waits a few seconds at most for an address, then goes on in
+    // the background.
+    if (net_start(line, sizeof line)) ok(line);
+    else kprintf("  %s\n", line);
 
     process_self_test(line, sizeof line);
     ok(line);

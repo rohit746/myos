@@ -17,6 +17,10 @@
 #                   a fault inside the crash screen don't bring it down
 #   make test-kernel build a kernel with its unit tests (KTEST, kernel/test/),
 #                   run them headless at boot and pass or fail on the result
+#   make test-net   plug QEMU's e1000e (UEFI) and e1000 (BIOS) cards into a
+#                   script that plays the rest of a LAN: the kernel must get
+#                   an address from its DHCP server and answer ARP, ping, a
+#                   closed UDP port and a closed TCP port
 #   make crash-test  boot a kernel that page-faults on purpose (with a window)
 #   make compdb      write compile_commands.json for your editor
 #   make clean
@@ -87,7 +91,7 @@ QEMU_COMMON = qemu-system-x86_64 -M q35 -m 512M -cpu max -smp 4 \
 	-vga none -device VGA,xres=$(RES_X),yres=$(RES_Y),vgamem_mb=32 \
 	-serial stdio
 
-.PHONY: all kernel user run run-bios debug usb test test-crash test-kernel crash-test compdb clean FORCE
+.PHONY: all kernel user run run-bios debug usb test test-crash test-kernel test-net crash-test compdb clean FORCE
 
 all: $(ISO)
 kernel: $(KERNEL)
@@ -250,6 +254,10 @@ KTEST_MAKE := $(MAKE) BUILD=$(BUILD)/ktest EXTRA_CFLAGS="$(EXTRA_CFLAGS) -DMYOS_
 test-kernel:
 	$(KTEST_MAKE) $(BUILD)/ktest/myos.iso
 	OVMF="$(OVMF)" scripts/ktest.sh $(BUILD)/ktest/myos.iso $(BUILD)/test/ktest.log
+
+test-net: $(ISO)
+	OVMF="$(OVMF)" python3 -I scripts/net-test.py $(ISO) $(BUILD)/test/net-e1000e.log e1000e
+	python3 -I scripts/net-test.py $(ISO) $(BUILD)/test/net-e1000.log e1000
 
 # compile_commands.json so editors (clangd) see the real x86-64 flags.
 compdb:

@@ -185,6 +185,23 @@ int vfs_open(const char *path, int flags) {
     return fd;
 }
 
+int vfs_open_vnode(struct vnode *v, int flags) {
+    mutex_lock(&vfs_lock);
+    int fd = 0;
+    while (fd < VFS_MAX_FILES && files[fd].refs) fd++;
+    if (fd < VFS_MAX_FILES) files[fd] = (struct file){.refs = 1, .flags = flags, .vnode = v};
+    mutex_unlock(&vfs_lock);
+    return fd < VFS_MAX_FILES ? fd : -EMFILE;
+}
+
+struct vnode *vfs_hold_vnode(int fd) {
+    mutex_lock(&vfs_lock);
+    struct file *f = get_file(fd);
+    if (f) f->refs++;
+    mutex_unlock(&vfs_lock);
+    return f ? f->vnode : NULL;
+}
+
 int vfs_hold(int fd) {
     mutex_lock(&vfs_lock);
     struct file *f = get_file(fd);
@@ -270,8 +287,10 @@ int vfs_readdir(int fd, struct vfs_dirent *out) {
 int vfs_close(int fd) {
     mutex_lock(&vfs_lock);
     struct file *f = get_file(fd);
-    if (f) f->refs--;
+    struct vnode *released = NULL;
+    if (f && --f->refs == 0 && f->vnode->ops->release) released = f->vnode;
     mutex_unlock(&vfs_lock);
+    if (released) released->ops->release(released); // a socket: it may wait for the network
     return f ? 0 : -EBADF;
 }
 

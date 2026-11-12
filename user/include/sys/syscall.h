@@ -11,6 +11,12 @@
 #define SYS_dup2           33
 #define SYS_nanosleep      35
 #define SYS_getpid         39
+#define SYS_socket         41
+#define SYS_connect        42
+#define SYS_sendto         44
+#define SYS_recvfrom       45
+#define SYS_bind           49
+#define SYS_setsockopt     54
 #define SYS_exit           60
 #define SYS_wait4          61
 #define SYS_getppid        110

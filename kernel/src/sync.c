@@ -364,6 +364,20 @@ void cond_wait(struct condvar *c, struct mutex *m) {
     mutex_lock(m);
 }
 
+bool cond_wait_until(struct condvar *c, struct mutex *m, uint64_t deadline_ns) {
+    might_sleep("cond_wait_until");
+    if (!mutex_held(m) &&
+        violation(V_NOT_OWNER, "cond_wait_until: %s waits without holding mutex %s", thread_name(thread_current()),
+                  m->dep.name))
+        return false;
+    uint64_t flags = spin_lock_irqsave(&c->guard);
+    mutex_unlock(m);
+    bool woken = wait_queue_sleep_until(&c->waiters, &c->guard, deadline_ns);
+    spin_unlock_irqrestore(&c->guard, flags);
+    mutex_lock(m);
+    return woken;
+}
+
 void cond_signal(struct condvar *c) {
     uint64_t flags = spin_lock_irqsave(&c->guard);
     wait_queue_wake_one(&c->waiters);

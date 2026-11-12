@@ -11,6 +11,7 @@
 #include <proc.h>
 #include <sched.h>
 #include <shell.h>
+#include <socket.h>
 #include <string.h>
 #include <syscall.h>
 #include <time.h>
@@ -95,6 +96,8 @@ static int64_t sys_read(int64_t fd, uint64_t buf, uint64_t len) {
     struct process *p = process_current();
     int file = file_of(p, fd);
     if (file < 0) return file;
+    int64_t r = socket_rw(file, buf, len, false); // a socket's read waits for data
+    if (r != -ENOTSOCK) return r;
     if (!user_range_ok(buf, len, true)) return -EFAULT;
     char chunk[IO_CHUNK];
     uint64_t done = 0;
@@ -115,6 +118,10 @@ static int64_t sys_write(int64_t fd, uint64_t buf, uint64_t len) {
     bool to_buffer = p->out && (fd == 1 || fd == 2);
     int file = to_buffer ? 0 : file_of(p, fd);
     if (file < 0) return file;
+    if (!to_buffer) {
+        int64_t r = socket_rw(file, buf, len, true); // a datagram socket sends it as one
+        if (r != -ENOTSOCK) return r;
+    }
     // Check it all first, so a bad buffer writes nothing.
     if (!user_range_ok(buf, len, false)) return -EFAULT;
     char chunk[IO_CHUNK];
@@ -331,6 +338,12 @@ void syscall_dispatch(struct interrupt_frame *f) {
     case SYS_nanosleep: ret = sys_nanosleep(a0, a1); break;
     case SYS_getpid: ret = (int64_t)p->pid; break;
     case SYS_clock_gettime: ret = sys_clock_gettime(a0, a1); break;
+    case SYS_socket: ret = sys_socket((int64_t)a0, (int64_t)a1, (int64_t)a2); break;
+    case SYS_connect: ret = sys_connect((int64_t)a0, a1, a2); break;
+    case SYS_sendto: ret = sys_sendto((int64_t)a0, a1, a2, (int64_t)a3, a4, a5); break;
+    case SYS_recvfrom: ret = sys_recvfrom((int64_t)a0, a1, a2, (int64_t)a3, a4, a5); break;
+    case SYS_bind: ret = sys_bind((int64_t)a0, a1, a2); break;
+    case SYS_setsockopt: ret = sys_setsockopt((int64_t)a0, (int64_t)a1, (int64_t)a2, a3, a4); break;
     case SYS_exit:
         p->status = (int)(a0 & 0xff); // what a wait() would see, as on Linux
         p->fault = -1;

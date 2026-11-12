@@ -35,8 +35,9 @@ How to fill in the columns:
   - **crash**: the red crash screen (link a photo)
   - **hang**: the screen stopped changing (note the last line printed)
   - **no boot**: Limine or the kernel never appeared
-- **Notes**: keyboard (PS/2, USB, built-in), disks found, anything odd, and a
-  link to the issue or photo.
+- **Notes**: keyboard (PS/2, USB, built-in), disks found, the network card
+  (`net`: did it get an address, does `ping` work?), anything odd, and a link
+  to the issue or photo.
 
 ## Emulator baseline
 
@@ -69,6 +70,10 @@ emulate: the firmware, a device, or timing.
 - **Keyboard.** PS/2 and USB keyboards both work. On a laptop the built-in
   keyboard is usually PS/2-compatible; if it doesn't type, try a USB
   keyboard and say so in the report.
+- **Network.** Only Intel Ethernet has a driver (the e1000 family: I217,
+  I218 and I219 on board, the 82574L on a card), and none of the on-board
+  ones has been tried yet, so a report that says what `net` shows is
+  especially welcome. Wi-Fi and Realtek cards don't work.
 - **No serial port.** Most PCs have none, so the screen is the only output.
   Photograph the screen, especially the crash screen: its backtrace names
   the functions and can be turned into source lines with `llvm-symbolizer`
