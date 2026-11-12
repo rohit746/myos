@@ -1,0 +1,93 @@
+name: Hardware report
+description: Report how myos boots on a real PC, so it can go in docs/HARDWARE.md.
+title: "Hardware report: <machine>"
+labels: ["real-hardware"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying myos on a real machine. Before booting, read the
+        gotchas in [docs/HARDWARE.md](https://github.com/rohit746/myos/blob/main/docs/HARDWARE.md#common-gotchas)
+        (Secure Boot must be off).
+  - type: input
+    id: machine
+    attributes:
+      label: Machine
+      description: Make and model, or the motherboard for a desktop.
+      placeholder: Lenovo ThinkPad T480
+    validations:
+      required: true
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU
+      description: The `cpu:` line of the boot log.
+      placeholder: Intel(R) Core(TM) i5-8250U CPU @ 1.60GHz
+    validations:
+      required: false
+  - type: dropdown
+    id: firmware
+    attributes:
+      label: Firmware
+      description: What the machine's firmware supports.
+      options:
+        - UEFI only
+        - UEFI with CSM (legacy) support
+        - Legacy BIOS only
+        - Don't know
+    validations:
+      required: true
+  - type: input
+    id: boot-mode
+    attributes:
+      label: Boot log lines
+      description: The first lines of the boot screen, `myos <version>` and `booted by Limine ... via ...`. They give the version and whether it booted through UEFI or legacy BIOS. If they never appeared, write the release (e.g. myos-v0.1.0.iso) or commit you wrote to the stick, and the boot menu entry you picked.
+      placeholder: "myos v0.1.0 / booted by Limine 11.4.1 via UEFI (64-bit)"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - "shell: the myos> prompt came up and typing works"
+        - "partial: the shell came up but something is wrong"
+        - "crash: the red crash screen"
+        - "hang: the screen stopped changing"
+        - "no boot: Limine or the kernel never appeared"
+    validations:
+      required: true
+  - type: dropdown
+    id: keyboard
+    attributes:
+      label: Keyboard used
+      multiple: true
+      options:
+        - Built-in laptop keyboard
+        - PS/2 keyboard
+        - USB keyboard
+        - USB keyboard through a hub
+    validations:
+      required: false
+  - type: textarea
+    id: photo
+    attributes:
+      label: Photo of the screen
+      description: Drag a photo of the screen here, showing the last thing printed (the whole crash screen, if there was one).
+    validations:
+      required: true
+  - type: textarea
+    id: lspci
+    attributes:
+      label: lspci -n
+      description: Optional. Paste the output of `lspci -n` from Linux on the same machine, or type in what myos's `lspci -n` printed.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything else, e.g. firmware settings you changed, which boot menu entry you picked, what `disk` and `lsusb` showed.
+    validations:
+      required: false
