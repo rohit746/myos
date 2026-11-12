@@ -4,10 +4,12 @@
 #   scripts/boot-test.sh <uefi|bios> <boot|power|crash|panic|fault> <iso> <logfile>
 #
 #   boot   pass when the kernel reports it's up, ACPI found all the CPUs QEMU
-#          was given, a PIT IRQ came in through the I/O APIC, the timer
-#          tick ran at the calibrated rate, the scheduler preempted threads
-#          that never yield, threads contending on locks got exact counts
-#          (and the lock debug checks fired), PCI enumeration found devices
+#          was given and all of them came online, a PIT IRQ came in through
+#          the I/O APIC, the timer tick ran at the calibrated rate, the
+#          scheduler preempted threads that never yield and spread them over
+#          the CPUs, threads contending on locks got exact counts (and the
+#          lock debug checks fired), a kernel page remapped while every CPU
+#          read it was never read stale (TLB shootdown), PCI enumeration found devices
 #          through ECAM and QEMU's edu and igb devices raised an MSI and an
 #          MSI-X (igb sits behind a PCIe root port, so the scan has to go
 #          through a bridge), the AHCI driver found a scratch disk on a
@@ -75,6 +77,8 @@ timeout_s=${BOOT_TIMEOUT:-90}
 ok_marker="Kernel is up."
 smp=4 # CPUs QEMU gets; the ACPI summary must list them all
 cpus_marker="cpus:   $smp,"
+smp_marker="SMP: $smp CPUs online"
+tlb_marker="TLB shootdown self-test passed"
 irq_marker="IRQ self-test passed"
 timer_marker="timer self-test passed"
 sched_marker="scheduler self-test passed"
@@ -135,7 +139,7 @@ outputs=("^  reboot +restart the machine"
          "^physical: [0-9]+ MiB managed"
          "^cpus: +$smp in the MADT"
          "^ACPI .*: [0-9]+ tables via the"
-         "^ +[0-9]+ +running +[0-9]+ +[0-9]+ +sh"
+         "^ +[0-9]+ +running +[0-9]+ +[0-9]+ +[0-9]+ +sh"
          "^threads: 4 threads ran and exited"
          "^01:00\.0 Ethernet controller \[0200\]: 8086:10c9 \(rev 01\)"
          "^00:1f\.2 0106: 8086:2922 \(rev 02\)"
@@ -488,10 +492,12 @@ while (( SECONDS - start < timeout_s )); do
         if grep -Fq "$ok_marker" "$log"; then
             if [[ "$expect" != boot ]]; then result=pass
             elif ! grep -Fq "$cpus_marker" "$log"; then result=cpus
+            elif ! grep -Fq "$smp_marker" "$log"; then result=smp
             elif ! grep -Fq "$irq_marker" "$log"; then result=irq
             elif ! grep -Fq "$timer_marker" "$log"; then result=timer
             elif ! grep -Fq "$sched_marker" "$log"; then result=sched
             elif ! grep -Fq "$sync_marker" "$log"; then result=sync
+            elif ! grep -Fq "$tlb_marker" "$log"; then result=tlb
             elif ! grep -Fq "$pci_marker" "$log"; then result=pci
             elif ! grep -Fq "$msi_marker" "$log" || ! grep -Fq "$msix_marker" "$log"; then result=msi
             elif ! disk_test_passed; then result=disk
@@ -554,10 +560,12 @@ pass)
     exit 0 ;;
 fail)    echo "FAIL $label unexpected kernel output:" ;;
 cpus)    echo "FAIL $label ACPI did not report $smp CPUs (\"$cpus_marker\"):" ;;
+smp)     echo "FAIL $label not every CPU came online (\"$smp_marker\"):" ;;
 irq)     echo "FAIL $label no device IRQ through the I/O APIC (\"$irq_marker\"):" ;;
 timer)   echo "FAIL $label the timer tick did not pass its self-test (\"$timer_marker\"):" ;;
 sched)   echo "FAIL $label the scheduler did not pass its self-test (\"$sched_marker\"):" ;;
 sync)    echo "FAIL $label the locks did not pass their self-test (\"$sync_marker\"):" ;;
+tlb)     echo "FAIL $label the TLB shootdown self-test did not pass (\"$tlb_marker\"):" ;;
 pci)     echo "FAIL $label PCI enumeration did not find devices through ECAM (\"$pci_marker\"):" ;;
 msi)     echo "FAIL $label QEMU's edu and igb devices did not raise an MSI and an MSI-X (\"$msi_marker\", \"$msix_marker\"):" ;;
 disk)    echo "FAIL $label the disk self-test did not pass on the AHCI and NVMe scratch disks (\"$disk_marker\" with \"${disk_markers[0]}\", \"${disk_markers[1]}\"):" ;;

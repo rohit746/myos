@@ -14,6 +14,9 @@
 //
 // The bitmaps live at the start of the first USABLE region big enough to hold
 // them, reached through the HHDM. For 512 MiB of RAM they take 32 KiB.
+//
+// One spinlock covers the bitmaps and counters, so any CPU or thread may
+// call in. It is the innermost lock: nothing here takes another.
 
 #include <kprintf.h>
 #include <limine.h>
@@ -21,6 +24,7 @@
 #include <pmm.h>
 #include <stdbool.h>
 #include <string.h>
+#include <sync.h>
 
 uint64_t hhdm_offset;
 
@@ -37,6 +41,7 @@ static uint64_t next_word; // where the next single-page search starts
 static struct { uint64_t base, length; } reclaimable[MAX_RECLAIMABLE];
 static size_t reclaimable_count;
 static bool reclaimed;
+static struct spinlock lock = SPINLOCK_INIT("pmm");
 
 static inline bool bit_test(const uint64_t *map, uint64_t page) {
     return (map[page / 64] >> (page % 64)) & 1;
@@ -133,7 +138,7 @@ static void check_allocated(const char *who, uint64_t phys) {
     if (!bit_test(used_map, p)) panic("%s: %p is already free (double free?)", who, (void *)phys);
 }
 
-uint64_t pmm_alloc_page(void) {
+static uint64_t alloc_page_locked(void) {
     if (free_pages == 0) return 0;
     for (uint64_t i = 0; i < map_words; i++) {
         uint64_t w = (next_word + i) % map_words;
@@ -148,17 +153,35 @@ uint64_t pmm_alloc_page(void) {
     panic("pmm: %lu pages counted free but none found in the bitmap", free_pages);
 }
 
+uint64_t pmm_alloc_page(void) {
+    spin_lock(&lock);
+    uint64_t phys = alloc_page_locked();
+    spin_unlock(&lock);
+    return phys;
+}
+
 void pmm_free_page(uint64_t phys) {
+    spin_lock(&lock);
     check_allocated("pmm_free_page", phys);
     bit_clear(used_map, phys / PAGE_SIZE);
     free_pages++;
+    spin_unlock(&lock);
 }
 
 uint64_t pmm_alloc_contiguous(size_t count) { return pmm_alloc_contiguous_below(count, UINT64_MAX); }
 
+static uint64_t alloc_contiguous_locked(size_t count, uint64_t limit);
+
 uint64_t pmm_alloc_contiguous_below(size_t count, uint64_t limit) {
+    spin_lock(&lock);
+    uint64_t phys = alloc_contiguous_locked(count, limit);
+    spin_unlock(&lock);
+    return phys;
+}
+
+static uint64_t alloc_contiguous_locked(size_t count, uint64_t limit) {
     if (count == 0 || count > free_pages) return 0;
-    if (count == 1 && limit == UINT64_MAX) return pmm_alloc_page();
+    if (count == 1 && limit == UINT64_MAX) return alloc_page_locked();
 
     // First fit, skipping fully used words quickly.
     uint64_t run = 0;
@@ -184,24 +207,31 @@ uint64_t pmm_alloc_contiguous_below(size_t count, uint64_t limit) {
 }
 
 void pmm_free_contiguous(uint64_t phys, size_t count) {
+    spin_lock(&lock);
     for (size_t i = 0; i < count; i++) check_allocated("pmm_free_contiguous", phys + i * PAGE_SIZE);
     for (size_t i = 0; i < count; i++) bit_clear(used_map, phys / PAGE_SIZE + i);
     free_pages += count;
+    spin_unlock(&lock);
 }
 
 void pmm_reclaim_bootloader_memory(void) {
-    if (reclaimed) return;
-    reclaimed = true;
-    for (size_t i = 0; i < reclaimable_count; i++) {
-        uint64_t first, end;
-        if (whole_pages(reclaimable[i].base, reclaimable[i].length, &first, &end))
-            add_free_pages(first, end);
+    spin_lock(&lock);
+    if (!reclaimed) {
+        reclaimed = true;
+        for (size_t i = 0; i < reclaimable_count; i++) {
+            uint64_t first, end;
+            if (whole_pages(reclaimable[i].base, reclaimable[i].length, &first, &end))
+                add_free_pages(first, end);
+        }
     }
+    spin_unlock(&lock);
 }
 
 struct pmm_stats pmm_get_stats(void) {
-    return (struct pmm_stats){
-        .total_pages = total_pages, .free_pages = free_pages, .reserved_pages = reserved_pages};
+    spin_lock(&lock);
+    struct pmm_stats st = {.total_pages = total_pages, .free_pages = free_pages, .reserved_pages = reserved_pages};
+    spin_unlock(&lock);
+    return st;
 }
 
 // ---------------------------------------------------------------------------

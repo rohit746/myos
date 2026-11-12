@@ -1,8 +1,8 @@
 #pragma once
 // Virtual memory manager: the kernel's own 4-level page tables.
 //
-// Addresses passed in are 4 KiB aligned. Not safe to call from interrupt
-// handlers or several CPUs yet.
+// Addresses passed in are 4 KiB aligned. Safe to call from several CPUs at
+// once (one lock covers every space), not from interrupt handlers.
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -35,6 +35,10 @@ extern struct vmm_space kernel_space;
 // physical memory manager. Limine's page tables are unused afterwards.
 void vmm_init(struct limine_memmap_response *memmap, uint64_t kernel_phys, uint64_t kernel_virt);
 
+// The same CPU settings on an application processor, then load the
+// kernel's page tables there.
+void vmm_init_ap(void);
+
 // Address spaces for user processes. Each has its own lower half (PML4
 // entries 0-255) and shares the kernel half (256-511) with kernel_space:
 // vmm_init() fills every kernel-half PML4 entry, so the tables below them
@@ -54,9 +58,15 @@ bool vmm_user_accessible(struct vmm_space *space, uint64_t virt, bool write);
 // Map one 4 KiB page. Panics if `virt` is already mapped.
 void vmm_map(struct vmm_space *space, uint64_t virt, uint64_t phys, uint32_t flags);
 
-// Unmap one 4 KiB page and flush it from the TLB. Panics if it isn't mapped.
-// Page tables left empty are not freed yet.
+// Unmap one 4 KiB page and flush it from the TLB, this CPU's and every other
+// one's that may hold it (a TLB shootdown, smp.h). Panics if it isn't
+// mapped. Page tables left empty are not freed yet.
 void vmm_unmap(struct vmm_space *space, uint64_t virt);
+
+// The same for `pages` pages from `virt` on, with one shootdown for them
+// all. Stores each page's physical address in phys[] (the caller frees
+// them: only now is nothing using them).
+void vmm_unmap_range(struct vmm_space *space, uint64_t virt, uint64_t pages, uint64_t *phys);
 
 // Map `size` bytes of device registers at physical `phys` (any alignment),
 // uncached and writable, and return their virtual address. The mapping lives

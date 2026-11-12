@@ -5,6 +5,7 @@
 #include <cpu.h>
 #include <kprintf.h>
 #include <proc.h>
+#include <smp.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -58,6 +59,11 @@ void idt_init(void) {
         uint8_t ist = v == 8 ? IST_DOUBLE_FAULT : 0;
         set_gate((uint8_t)v, (uint64_t)(isr_stubs + v * STUB_SIZE), ist);
     }
+    idt_load();
+}
+
+// Every CPU shares the one IDT (and handler table).
+void idt_load(void) {
     struct idtr idtr = {.limit = sizeof idt - 1, .base = (uint64_t)idt};
     __asm__ volatile("lidt %0" : : "m"(idtr) : "memory");
 }
@@ -84,6 +90,7 @@ static void backtrace(uint64_t rbp) {
 
 static void __attribute__((noreturn)) exception_panic(struct interrupt_frame *f) {
     cli();
+    smp_panic_begin();
     kprintf("\n" ANSI_PANIC " *** CPU EXCEPTION %lu: %s *** " ANSI_RESET "\n", f->vector, exception_names[f->vector]);
 
     kprintf("  error code: 0x%lx\n", f->error_code);
@@ -109,6 +116,9 @@ static void __attribute__((noreturn)) exception_panic(struct interrupt_frame *f)
 
 // Called from isr_common in isr.S for every interrupt and exception.
 void isr_dispatch(struct interrupt_frame *f) {
+    // Another CPU panicked and stopped this one with an NMI (smp.c). This
+    // may be before the entry code's swapgs, so nothing here uses %gs.
+    if (f->vector == 2 && smp_stopping()) smp_stop_this_cpu();
     // An exception in user code is the process's problem, not the kernel's:
     // it gets killed. NMIs, double faults and machine checks are about the
     // machine, whatever was running.

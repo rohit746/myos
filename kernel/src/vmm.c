@@ -15,7 +15,10 @@
 #include <limine.h>
 #include <memory.h>
 #include <pmm.h>
+#include <sched.h>
+#include <smp.h>
 #include <string.h>
+#include <sync.h>
 #include <vmm.h>
 
 // Page-table entry bits.
@@ -59,6 +62,11 @@ static uint64_t nx_bit; // PTE_NX when the CPU has NX, else 0 (the bit is reserv
 static bool have_1g_pages;
 static uint64_t kernel_phys_base, kernel_virt_base;
 static struct vmm_stats stats;
+
+// Every space's tables and `stats`: kernel_space is shared by every CPU, and
+// user spaces share its kernel half. Taken under the heap's lock (kheap
+// grows and shrinks through vmm_map/vmm_unmap_range); takes the PMM's.
+static struct spinlock vmm_lock = SPINLOCK_INIT("page tables");
 
 // Section bounds from kernel/linker.ld.
 extern char requests_start[], requests_end[];
@@ -139,29 +147,48 @@ void vmm_map(struct vmm_space *s, uint64_t virt, uint64_t phys, uint32_t flags) 
     if ((virt | phys) & (PAGE_SIZE - 1))
         panic("vmm_map: %p -> %p is not page-aligned", (void *)virt, (void *)phys);
     // Not-present entries are never cached in the TLB, so no flush is needed.
+    spin_lock(&vmm_lock);
     set_leaf(s, virt, phys, 1, flags);
+    spin_unlock(&vmm_lock);
+}
+
+void vmm_unmap_range(struct vmm_space *s, uint64_t virt, uint64_t pages, uint64_t *phys) {
+    if (virt & (PAGE_SIZE - 1)) panic("vmm_unmap: %p is not page-aligned", (void *)virt);
+    spin_lock(&vmm_lock);
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t v = virt + i * PAGE_SIZE;
+        uint64_t *e = walk(s, v, 1, false, false);
+        if (e == NULL || !(*e & PTE_PRESENT)) panic("vmm_unmap: %p is not mapped", (void *)v);
+        phys[i] = *e & PTE_ADDR;
+        *e = 0;
+        stats.pages_4k--;
+    }
+    spin_unlock(&vmm_lock);
+    // Kernel mappings are in every space, whichever one is loaded. Stay on
+    // this CPU until both flushes are done, so none is missed.
+    preempt_disable();
+    if (is_active(s) || s == &kernel_space) tlb_flush_local(virt, pages);
+    tlb_shootdown(s->pml4, virt, pages);
+    preempt_enable();
 }
 
 void vmm_unmap(struct vmm_space *s, uint64_t virt) {
-    if (virt & (PAGE_SIZE - 1)) panic("vmm_unmap: %p is not page-aligned", (void *)virt);
-    uint64_t *e = walk(s, virt, 1, false, false);
-    if (e == NULL || !(*e & PTE_PRESENT)) panic("vmm_unmap: %p is not mapped", (void *)virt);
-    *e = 0;
-    stats.pages_4k--;
-    // Kernel mappings are in every space, whichever one is loaded.
-    if (is_active(s) || s == &kernel_space) invlpg(virt);
+    uint64_t phys;
+    vmm_unmap_range(s, virt, 1, &phys);
 }
 
 
 bool vmm_space_create(struct vmm_space *s) {
     uint64_t phys = pmm_alloc_page();
     if (phys == 0) return false;
-    stats.table_pages++;
     uint64_t *pml4 = phys_to_virt(phys);
     uint64_t *kernel = phys_to_virt(kernel_space.pml4);
     memset(pml4, 0, KERNEL_HALF * sizeof *pml4);
     memcpy(pml4 + KERNEL_HALF, kernel + KERNEL_HALF, (512 - KERNEL_HALF) * sizeof *pml4);
     s->pml4 = phys;
+    spin_lock(&vmm_lock);
+    stats.table_pages++;
+    spin_unlock(&vmm_lock);
     return true;
 }
 
@@ -187,11 +214,13 @@ static void free_tree(uint64_t phys, int level) {
 void vmm_space_destroy(struct vmm_space *s) {
     if (s == &kernel_space) panic("vmm_space_destroy: the kernel's space");
     if (is_active(s)) panic("vmm_space_destroy: the space is in use");
+    spin_lock(&vmm_lock);
     uint64_t *pml4 = phys_to_virt(s->pml4);
     for (int i = 0; i < KERNEL_HALF; i++)
         if (pml4[i] & PTE_PRESENT) free_tree(pml4[i] & PTE_ADDR, 3);
     pmm_free_page(s->pml4);
     stats.table_pages--;
+    spin_unlock(&vmm_lock);
     s->pml4 = 0;
 }
 
@@ -212,12 +241,14 @@ static uint64_t mmio_next = VMM_MMIO_BASE;
 volatile void *vmm_map_mmio(uint64_t phys, uint64_t size) {
     uint64_t start = ALIGN_DOWN(phys, PAGE_SIZE);
     uint64_t end = ALIGN_UP(phys + size, PAGE_SIZE);
+    spin_lock(&vmm_lock);
     if (size == 0 || end <= start || end - start > VMM_MMIO_BASE + VMM_MMIO_SIZE - mmio_next)
         panic("vmm_map_mmio: no room to map %p (%lu bytes)", (void *)phys, size);
     uint64_t virt = mmio_next;
+    mmio_next += end - start;
+    spin_unlock(&vmm_lock);
     for (uint64_t p = start; p < end; p += PAGE_SIZE)
         vmm_map(&kernel_space, virt + (p - start), p, VMM_WRITE | VMM_UC);
-    mmio_next += end - start;
     return (volatile void *)(virt + (phys - start));
 }
 
@@ -236,7 +267,12 @@ bool vmm_virt_to_phys(struct vmm_space *s, uint64_t virt, uint64_t *phys) {
     return false;
 }
 
-struct vmm_stats vmm_get_stats(void) { return stats; }
+struct vmm_stats vmm_get_stats(void) {
+    spin_lock(&vmm_lock);
+    struct vmm_stats st = stats;
+    spin_unlock(&vmm_lock);
+    return st;
+}
 
 // ---------------------------------------------------------------------------
 // Building the kernel's tables.
@@ -340,6 +376,13 @@ void vmm_init(struct limine_memmap_response *mm, uint64_t kernel_phys, uint64_t 
 
     // Limine turns WP on; make sure it stays on so the kernel itself faults
     // when it writes to a read-only page.
+    write_cr0(read_cr0() | CR0_WP);
+    write_cr3(kernel_space.pml4);
+}
+
+void vmm_init_ap(void) {
+    if (nx_bit) wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_NXE);
+    program_pat();
     write_cr0(read_cr0() | CR0_WP);
     write_cr3(kernel_space.pml4);
 }

@@ -19,6 +19,7 @@
 #include <sched.h>
 #include <serial.h>
 #include <shell.h>
+#include <smp.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -76,6 +77,12 @@ static volatile struct limine_date_at_boot_request date_request = {
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_module_request module_request = {
     .id = LIMINE_MODULE_REQUEST_ID, .revision = 0};
+
+// Starts the other CPUs and parks them until smp_init() releases them. With
+// x2APIC on where the CPUs have it, as apic_init() would turn it on anyway.
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_mp_request mp_request = {
+    .id = LIMINE_MP_REQUEST_ID, .revision = 0, .flags = LIMINE_MP_REQUEST_X86_64_X2APIC};
 
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
@@ -251,6 +258,7 @@ static void print_memory_map(void) {
 }
 
 void kmain(void) {
+    cpu_early_init(); // this_cpu(), which kprintf uses
     serial_init();
     // Printed before there is a screen: it goes to the serial port and the
     // kernel log, and the console shows it once it's up.
@@ -377,15 +385,25 @@ void kmain(void) {
     timer_self_test(line, sizeof line);
     if (line[0]) ok(line);
 
+    // Before the other CPUs start: they copy its settings.
+    syscall_init(line, sizeof line);
+    ok(line);
+
     sched_init();
     ksnprintf(line, sizeof line, "scheduler started: round robin, %d ms slices from the timer tick, %u KiB stacks",
               SCHED_QUANTUM_MS, THREAD_STACK_SIZE / 1024);
+    ok(line);
+
+    smp_init(mp_request.response, line, sizeof line);
     ok(line);
 
     sched_self_test(line, sizeof line);
     ok(line);
 
     sync_self_test(line, sizeof line);
+    ok(line);
+
+    smp_self_test(line, sizeof line);
     ok(line);
 
     pci_init(line, sizeof line);
@@ -414,9 +432,6 @@ void kmain(void) {
 
     if (!fat_mount_all(line, sizeof line)) warn_line(line);
     else if (line[0]) ok(line);
-
-    syscall_init(line, sizeof line);
-    ok(line);
 
     process_self_test(line, sizeof line);
     ok(line);

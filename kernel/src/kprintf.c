@@ -1,9 +1,11 @@
+#include <arch.h>
 #include <console.h>
 #include <cpu.h>
 #include <klog.h>
 #include <kprintf.h>
 #include <sched.h>
 #include <serial.h>
+#include <smp.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -121,14 +123,62 @@ static void format(struct sink *s, const char *fmt, va_list ap) {
     }
 }
 
-void kvprintf(const char *fmt, va_list ap) {
-    // One call's output stays together, and the console's state (cursor,
-    // escape-code parser) is never changed by two threads at once.
+// The CPU printing now, or -1. One call's output stays together, and the
+// console's state (cursor, escape-code parser) is never changed by two CPUs
+// at once. The printing thread can't be preempted, so it stays on that CPU;
+// an interrupt handler there that prints too just goes ahead (waiting for
+// the code it interrupted would never end), as it did on one CPU.
+static volatile int printing_cpu = -1;
+static volatile bool lock_broken;
+
+// True if the caller must call console_unlock(true) afterwards.
+static bool console_lock(void) {
+    if (lock_broken) return false;
     preempt_disable();
+    int me = (int)this_cpu()->index;
+    if (__atomic_load_n(&printing_cpu, __ATOMIC_RELAXED) == me) {
+        preempt_enable();
+        return false;
+    }
+    for (;;) {
+        int expected = -1;
+        if (__atomic_compare_exchange_n(&printing_cpu, &expected, me, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+            return true;
+        while (__atomic_load_n(&printing_cpu, __ATOMIC_RELAXED) != -1 && !lock_broken) {
+            pause();
+            smp_poll();
+        }
+        if (lock_broken) {
+            preempt_enable();
+            return false;
+        }
+    }
+}
+
+static void console_unlock(bool locked) {
+    if (!locked) return;
+    __atomic_store_n(&printing_cpu, -1, __ATOMIC_RELEASE);
+    preempt_enable();
+}
+
+void kprintf_break_lock(void) { lock_broken = true; }
+
+bool kprintf_hold(void) {
+    preempt_disable(); // also when nested (console_lock then returns false)
+    return console_lock();
+}
+
+void kprintf_release(bool held) {
+    console_unlock(held);
+    preempt_enable();
+}
+
+void kvprintf(const char *fmt, va_list ap) {
+    bool locked = console_lock();
     struct sink s = {.put = put_out};
     format(&s, fmt, ap);
     console_flush();
-    preempt_enable();
+    console_unlock(locked);
 }
 
 void kprintf(const char *fmt, ...) {
@@ -139,11 +189,11 @@ void kprintf(const char *fmt, ...) {
 }
 
 void kwrite(const char *buf, size_t size) {
-    preempt_disable();
+    bool locked = console_lock();
     struct sink s = {.put = put_out};
     for (size_t i = 0; i < size; i++) put_out(&s, buf[i]);
     console_flush();
-    preempt_enable();
+    console_unlock(locked);
 }
 
 int ksnprintf(char *buf, size_t size, const char *fmt, ...) {
@@ -158,6 +208,7 @@ int ksnprintf(char *buf, size_t size, const char *fmt, ...) {
 
 void panic(const char *fmt, ...) {
     cli();
+    smp_panic_begin();
     kprintf("\n" ANSI_PANIC " *** KERNEL PANIC *** ");
     va_list ap;
     va_start(ap, fmt);

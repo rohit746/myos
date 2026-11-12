@@ -21,6 +21,7 @@
 #include <cpu.h>
 #include <kprintf.h>
 #include <memory.h>
+#include <smp.h>
 #include <stddef.h>
 #include <vmm.h>
 
@@ -49,6 +50,8 @@
 #define LAPIC_EOI      0x0b0
 #define LAPIC_SVR      0x0f0
 #define LAPIC_ESR      0x280
+#define LAPIC_ICR_LOW  0x300
+#define LAPIC_ICR_HIGH 0x310
 #define LAPIC_LVT_CMCI 0x2f0
 #define LAPIC_LVT_TIMER   0x320
 #define LAPIC_LVT_THERMAL 0x330
@@ -65,6 +68,10 @@
 #define LVT_ACTIVE_LOW   (1u << 13)
 #define LVT_MASKED       (1u << 16)
 #define LVT_TIMER_PERIODIC (1u << 17)
+
+#define ICR_DELIVERY_NMI (4u << 8)
+#define ICR_PENDING      (1u << 12) // xAPIC: the last IPI hasn't been sent yet
+#define ICR_ASSERT       (1u << 14)
 
 #define TIMER_DIVIDE_BY_16 0x3 // divide configuration register encoding
 _Static_assert(LAPIC_TIMER_DIVIDER == 16, "TIMER_DIVIDE_BY_16 must match LAPIC_TIMER_DIVIDER");
@@ -93,6 +100,7 @@ static struct ioapic ioapics[MAX_IOAPICS];
 static size_t ioapic_count;
 static interrupt_handler_t irq_handlers[ISA_IRQ_COUNT];
 static interrupt_handler_t msi_handlers[MSI_VECTOR_END - MSI_VECTOR_BASE];
+static struct raw_spinlock msi_lock; // msi_handlers, from any CPU
 static struct apic_info info;
 
 // ---------------------------------------------------------------------------
@@ -145,10 +153,10 @@ uint32_t lapic_timer_count(void) { return lapic_read(LAPIC_TIMER_CURRENT); }
 
 static void spurious_handler(struct interrupt_frame *f) {
     (void)f;
-    info.spurious++; // no EOI: a spurious interrupt never set an ISR bit
+    __atomic_add_fetch(&info.spurious, 1, __ATOMIC_RELAXED); // no EOI: a spurious interrupt never set an ISR bit
 }
 
-// The ACPI processor UID of the CPU running this, for the MADT's LINT NMIs.
+// The BSP's ACPI processor UID, for the MADT's LINT NMIs.
 static bool boot_cpu_uid(uint32_t *uid) {
     const struct acpi_info *a = acpi_get_info();
     for (size_t i = 0; i < a->cpu_count; i++)
@@ -159,33 +167,40 @@ static bool boot_cpu_uid(uint32_t *uid) {
     return false;
 }
 
-static void lapic_init(void) {
+// Turn on this CPU's local APIC: on the BSP, in x2APIC mode if the CPU
+// has it; on an AP, in the mode the BSP chose (lapic_read and lapic_write
+// assume they all match).
+static void lapic_enable(bool bsp) {
     uint32_t a, b, c, d;
     cpuid(1, 0, &a, &b, &c, &d);
     if (!(d & CPUID1_EDX_APIC)) panic("apic: this CPU has no local APIC");
 
     // Valid IA32_APIC_BASE transitions are disabled -> xAPIC -> x2APIC, so
-    // enable it first. Firmware may already have switched it to x2APIC,
-    // which can't be undone without disabling it.
+    // enable it first. Firmware (or the bootloader) may already have
+    // switched it to x2APIC, which can't be undone without disabling it.
     uint64_t base = rdmsr(MSR_APIC_BASE);
     if (!(base & APIC_BASE_ENABLE)) {
         base |= APIC_BASE_ENABLE;
         wrmsr(MSR_APIC_BASE, base);
     }
-    if (!(base & APIC_BASE_X2APIC) && (c & CPUID1_ECX_X2APIC)) {
+    bool want_x2apic = bsp ? (c & CPUID1_ECX_X2APIC) != 0 : x2apic;
+    if (!(base & APIC_BASE_X2APIC) && want_x2apic) {
         base |= APIC_BASE_X2APIC;
         wrmsr(MSR_APIC_BASE, base);
+    }
+    if (!bsp) {
+        if (!!(base & APIC_BASE_X2APIC) != x2apic)
+            panic("apic: CPU %u's local APIC is in %s mode, the BSP's isn't", lapic_id(), x2apic ? "xAPIC" : "x2APIC");
+        return;
     }
     x2apic = base & APIC_BASE_X2APIC;
     info.lapic_phys = base & APIC_BASE_ADDR;
     if (!x2apic) lapic_regs = vmm_map_mmio(info.lapic_phys, PAGE_SIZE);
+}
 
-    uint32_t version = lapic_read(LAPIC_VERSION);
-    info.x2apic = x2apic;
-    info.lapic_id = lapic_id();
-    info.lapic_version = version & 0xff;
-    info.lvt_count = ((version >> 16) & 0xff) + 1;
-
+// Mask every local interrupt source but the MADT's NMIs for `uid`, and
+// accept interrupts.
+static void lapic_setup(bool have_uid, uint32_t uid) {
     // Mask every local interrupt source. LINT0 is where the 8259s would
     // come in (ExtINT); they are masked too.
     lapic_write(LAPIC_LVT_TIMER, LVT_MASKED);
@@ -199,8 +214,6 @@ static void lapic_init(void) {
     // Then wire up the LINT pins the MADT says carry NMIs (usually LINT1).
     // NMIs are always edge-triggered; only the polarity can be chosen.
     const struct acpi_info *acpi = acpi_get_info();
-    uint32_t uid;
-    bool have_uid = boot_cpu_uid(&uid);
     for (size_t i = 0; i < acpi->lapic_nmi_count; i++) {
         const struct acpi_lapic_nmi *n = &acpi->lapic_nmis[i];
         if (n->uid != ACPI_ALL_CPUS && !(have_uid && n->uid == uid)) continue;
@@ -214,9 +227,48 @@ static void lapic_init(void) {
     lapic_write(LAPIC_ESR, 0);
 
     lapic_write(LAPIC_TPR, 0); // accept every priority
-    idt_set_handler(APIC_SPURIOUS_VECTOR, spurious_handler);
     lapic_write(LAPIC_SVR, SVR_ENABLE | APIC_SPURIOUS_VECTOR);
 }
+
+static void lapic_init(void) {
+    lapic_enable(true);
+    uint32_t version = lapic_read(LAPIC_VERSION);
+    info.x2apic = x2apic;
+    info.lapic_id = lapic_id();
+    info.lapic_version = version & 0xff;
+    info.lvt_count = ((version >> 16) & 0xff) + 1;
+    idt_set_handler(APIC_SPURIOUS_VECTOR, spurious_handler);
+    uint32_t uid;
+    bool have_uid = boot_cpu_uid(&uid);
+    lapic_setup(have_uid, uid);
+}
+
+void apic_init_ap(uint32_t acpi_uid) {
+    lapic_enable(false);
+    lapic_setup(true, acpi_uid);
+}
+
+static void send_icr(uint32_t apic_id, uint32_t low) {
+    // An x2APIC ICR write isn't serializing: make the memory the handler
+    // reads visible first.
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (x2apic) {
+        wrmsr(MSR_X2APIC_BASE + (LAPIC_ICR_LOW >> 4), (uint64_t)apic_id << 32 | low);
+        return;
+    }
+    // xAPIC: two writes, which an interrupt handler sending its own IPI
+    // must not come between.
+    uint64_t flags = read_rflags();
+    cli();
+    while (lapic_read(LAPIC_ICR_LOW) & ICR_PENDING) pause();
+    lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
+    lapic_write(LAPIC_ICR_LOW, low);
+    if (flags & RFLAGS_IF) sti();
+}
+
+void lapic_send_ipi(uint32_t apic_id, uint8_t vector) { send_icr(apic_id, ICR_ASSERT | vector); }
+
+void lapic_send_nmi(uint32_t apic_id) { send_icr(apic_id, ICR_ASSERT | ICR_DELIVERY_NMI); }
 
 // ---------------------------------------------------------------------------
 // I/O APICs
@@ -295,7 +347,7 @@ uint32_t irq_register(uint8_t isa_irq, interrupt_handler_t handler) {
     if (io == NULL) panic("irq_register: IRQ %u: no I/O APIC handles GSI %u", isa_irq, gsi);
 
     // Without interrupt remapping an I/O APIC can only name APIC IDs 0-255.
-    uint32_t dest = lapic_id();
+    uint32_t dest = info.lapic_id;
     if (dest > 0xff) panic("irq_register: APIC ID %u can't be an I/O APIC destination", dest);
 
     uint32_t low = (IRQ_VECTOR_BASE + isa_irq) | (pol == ACPI_ACTIVE_LOW ? REDIR_ACTIVE_LOW : 0) |
@@ -342,19 +394,22 @@ static void msi_dispatch(struct interrupt_frame *f) {
 
 bool msi_vector_alloc(interrupt_handler_t handler, struct msi_message *msg) {
     if (handler == NULL) panic("msi_vector_alloc: no handler");
-    uint32_t dest = lapic_id();
+    uint32_t dest = info.lapic_id;
     if (dest > 0xff) return false;
     uint64_t flags = read_rflags();
     cli();
+    raw_spin_lock(&msi_lock);
     for (unsigned v = MSI_VECTOR_BASE; v < MSI_VECTOR_END; v++) {
         if (msi_handlers[v - MSI_VECTOR_BASE]) continue;
         msi_handlers[v - MSI_VECTOR_BASE] = handler;
         idt_set_handler(v, msi_dispatch);
+        raw_spin_unlock(&msi_lock);
         if (flags & RFLAGS_IF) sti();
         *msg = (struct msi_message){
             .vector = v, .address = MSI_ADDRESS_BASE | dest << MSI_DEST_SHIFT, .data = v};
         return true;
     }
+    raw_spin_unlock(&msi_lock);
     if (flags & RFLAGS_IF) sti();
     return false;
 }
@@ -364,7 +419,12 @@ void msi_vector_free(uint8_t vector) {
         panic("msi_vector_free: vector %u was not allocated", vector);
     // Like irq_unregister, leave the IDT entry, so a message already on its
     // way still gets its EOI.
+    uint64_t flags = read_rflags();
+    cli();
+    raw_spin_lock(&msi_lock);
     msi_handlers[vector - MSI_VECTOR_BASE] = NULL;
+    raw_spin_unlock(&msi_lock);
+    if (flags & RFLAGS_IF) sti();
 }
 
 // ---------------------------------------------------------------------------

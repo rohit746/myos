@@ -9,7 +9,11 @@
 //   0x40-0xef  message-signalled interrupts (PCI MSI and MSI-X), handed out
 //              by msi_vector_alloc()
 //   0xf0       local APIC timer
+//   0xf1       TLB shootdown IPI (smp.c)
 //   0xff       local APIC spurious interrupt
+//
+// Device interrupts (ISA IRQs and MSIs) all go to the bootstrap processor,
+// whichever CPU registers them.
 
 #include <arch.h>
 #include <stdbool.h>
@@ -20,6 +24,7 @@
 #define MSI_VECTOR_BASE      0x40
 #define MSI_VECTOR_END       0xf0 // one past the last
 #define LAPIC_TIMER_VECTOR   0xf0
+#define IPI_TLB_VECTOR       0xf1
 #define APIC_SPURIOUS_VECTOR 0xff
 
 #define ISA_IRQ_COUNT 16
@@ -28,6 +33,15 @@
 // when the CPU has it), and mask every I/O APIC pin. Interrupts stay off;
 // the caller does sti() when it is ready. Needs ACPI and the VMM.
 void apic_init(void);
+
+// Enable an application processor's local APIC the same way (same mode, its
+// LVTs masked, the NMI pins the MADT gives `acpi_uid`). Interrupts stay off.
+void apic_init_ap(uint32_t acpi_uid);
+
+// Send interrupt `vector` to the CPU with local APIC ID `apic_id`, or an NMI.
+// Memory written before the call is visible to the handler.
+void lapic_send_ipi(uint32_t apic_id, uint8_t vector);
+void lapic_send_nmi(uint32_t apic_id);
 
 // Tell the local APIC the current interrupt has been handled. irq_register
 // handlers don't need this: it is sent for them.
@@ -48,7 +62,7 @@ void lapic_timer_start(uint32_t count, bool periodic, bool interrupt);
 // What the timer has left to count down (0 when a one-shot one is done).
 uint32_t lapic_timer_count(void);
 
-// Route ISA IRQ `isa_irq` (0-15) to `handler` on this CPU and unmask it.
+// Route ISA IRQ `isa_irq` (0-15) to `handler` on the BSP and unmask it.
 // The MADT's interrupt source overrides decide the GSI, polarity and trigger
 // mode. The local APIC gets its EOI after `handler` returns. Returns the GSI
 // the IRQ was wired to. Panics if the IRQ is taken or has no I/O APIC pin.
@@ -61,8 +75,8 @@ void irq_unregister(uint8_t isa_irq);
 // `address`, which the local APIC turns into an interrupt on `vector`.
 // msi_vector_alloc() takes a free vector in 0x40-0xef for `handler` (the
 // local APIC gets its EOI after `handler` returns) and fills in the message
-// that raises it on this CPU, edge-triggered, fixed delivery. It returns
-// false when every vector is taken, or when this CPU's APIC ID is above 255,
+// that raises it on the BSP, edge-triggered, fixed delivery. It returns
+// false when every vector is taken, or when the BSP's APIC ID is above 255,
 // which an MSI can't name without interrupt remapping.
 struct msi_message {
     uint8_t vector;
@@ -77,7 +91,7 @@ void msi_vector_free(uint8_t vector);
 
 struct apic_info {
     bool x2apic;            // the local APIC is in x2APIC mode (MSRs, not MMIO)
-    uint32_t lapic_id;
+    uint32_t lapic_id;      // the BSP's
     uint8_t lapic_version;
     uint8_t lvt_count;
     uint64_t lapic_phys;    // xAPIC register base (unused in x2APIC mode)

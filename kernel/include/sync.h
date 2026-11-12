@@ -1,9 +1,10 @@
 #pragma once
 // Locks for state that threads and interrupt handlers share.
 //
-// Spinlocks keep other threads off the CPU (preempt_disable) while held, and
-// spin_lock_irqsave() also turns interrupts off, for data an interrupt
-// handler touches too. A spinlock holder must not sleep.
+// Spinlocks keep other CPUs out (they spin until it is free) and other
+// threads off this CPU (preempt_disable) while held, and spin_lock_irqsave()
+// also turns interrupts off, for data an interrupt handler touches too. A
+// spinlock holder must not sleep.
 //
 // Everything that sleeps is built on wait queues: a thread puts itself on
 // one and blocks until another thread (or an interrupt handler) wakes it.
@@ -11,10 +12,11 @@
 // state, guarded by an internal spinlock. A mutex and a semaphore hand
 // themselves straight to the first waiter, so waiters get them in FIFO order.
 //
-// There is one CPU (SMP is #26). A thread that blocks does so with
-// interrupts off between putting itself on the queue and switching away,
-// which is what keeps a wake-up from being missed. With more CPUs, the
-// scheduler will need its own lock for that.
+// A thread that blocks does so with interrupts off between putting itself
+// on the queue and switching away, so nothing on its own CPU can wake it in
+// between. Another CPU can, as soon as the queue's lock is let go: the
+// scheduler then remembers the wake-up and the thread doesn't block at all
+// (sched_block in sched.h), so no wake-up is missed.
 //
 // Debug checks, always on; each one panics:
 //   - sleeping (mutex_lock, sem_down, cond_wait, thread_sleep) while holding

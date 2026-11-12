@@ -20,6 +20,7 @@
 #include <proc.h>
 #include <sched.h>
 #include <shell.h>
+#include <smp.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -315,8 +316,8 @@ static void cmd_cpu(int argc, char **argv) {
 
     const struct acpi_info *acpi = acpi_get_info();
     struct apic_info apic = apic_get_info();
-    kprintf("cpus:     %lu in the MADT; this is local APIC %u (%s mode)\n", acpi->cpus_enabled, apic.lapic_id,
-            apic.x2apic ? "x2APIC" : "xAPIC");
+    kprintf("cpus:     %lu in the MADT, %u online; this is local APIC %u (%s mode)\n", acpi->cpus_enabled,
+            smp_cpu_count(), lapic_id(), apic.x2apic ? "x2APIC" : "xAPIC");
 
     struct time_info t = time_get_info();
     mhz("clocks:   TSC ", t.tsc_hz);

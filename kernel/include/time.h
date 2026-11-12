@@ -23,10 +23,15 @@
 // once interrupts are on.
 void time_init(bool have_date, int64_t boot_unix_time);
 
+// Start this application processor's tick, at the BSP's rate. Interrupts
+// stay off.
+void time_init_ap(void);
+
 // Nanoseconds since time_init(). Never goes backwards. 0 before time_init().
 uint64_t clock_monotonic_ns(void);
 
-// Ticks since time_init(): TIMER_HZ a second, while interrupts are on.
+// The BSP's ticks since time_init(): TIMER_HZ a second, while interrupts are
+// on.
 uint64_t timer_ticks(void);
 
 // Wait at least `ms` milliseconds, spinning. Works with interrupts off.
