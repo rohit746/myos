@@ -382,9 +382,6 @@ void kmain(void) {
               TIMER_HZ, ti.clock_source);
     ok(line);
 
-    timer_self_test(line, sizeof line);
-    if (line[0]) ok(line);
-
     // Before the other CPUs start: they copy its settings.
     syscall_init(line, sizeof line);
     ok(line);
@@ -396,6 +393,11 @@ void kmain(void) {
 
     smp_init(mp_request.response, line, sizeof line);
     ok(line);
+
+    // Not before: until smp_init() the other CPUs spin in the bootloader,
+    // and under an emulator that can starve this one's timer interrupts.
+    timer_self_test(line, sizeof line);
+    if (line[0]) ok(line);
 
     sched_self_test(line, sizeof line);
     ok(line);
