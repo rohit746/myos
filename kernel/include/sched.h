@@ -54,7 +54,8 @@ struct thread {
     char name[THREAD_NAME_MAX];
     uint8_t *stack;          // THREAD_STACK_SIZE bytes from kmalloc; NULL for the boot thread
     uint64_t stack_top;      // goes into TSS.rsp0 while this thread runs
-    uint64_t wake_ns;        // BLOCKED in thread_sleep: when to wake up
+    uint64_t wake_ns;        // BLOCKED in thread_sleep or sched_block_until: when to wake up
+    bool timed_block;        // in sched_block_until, until wait_queue_sleep_until clears it
     uint64_t ticks;          // timer ticks it was running for
     uint64_t switches;       // times it was put on the CPU
     struct thread *next;     // in the run queue or the sleep list
@@ -98,6 +99,13 @@ struct thread *thread_current(void);
 // thread_sleep().
 void sched_block(void);
 void thread_wake(struct thread *t);
+
+// Like sched_block(), but the timer tick also makes the thread ready again
+// at `wake_ns` (clock_monotonic_ns()) if nothing woke it first. It sets
+// thread.timed_block, which the caller clears (interrupts still off) once it
+// knows which happened: until then thread_wake() on it is harmless even after
+// the deadline woke it.
+void sched_block_until(uint64_t wake_ns);
 
 // Threads that exist (running, ready, blocked, or dead and not freed yet),
 // the idle thread included.

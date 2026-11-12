@@ -76,6 +76,11 @@ struct wait_queue {
 // The caller checks its condition again afterwards.
 void wait_queue_sleep(struct wait_queue *wq, struct spinlock *lock);
 
+// Like wait_queue_sleep, but give up at `deadline_ns` (clock_monotonic_ns()).
+// True if a wake-up came, false if the deadline passed first; either way
+// the thread is off `wq` and holds `lock` again.
+bool wait_queue_sleep_until(struct wait_queue *wq, struct spinlock *lock, uint64_t deadline_ns);
+
 // Wake the first thread on `wq`, or every one. Hold the lock that protects
 // `wq`. wait_queue_wake_one() returns the thread it woke, or NULL.
 struct thread *wait_queue_wake_one(struct wait_queue *wq);

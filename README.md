@@ -52,7 +52,9 @@ built from (`git describe`).
    starts `/bin/init`, which starts the shell, `/bin/sh`, and you get a
    `myos>` prompt. `help` lists the shell's commands. `lspci -n` prints
    the PCI devices in the same format as Linux's `lspci -n`, so the two can
-   be compared line by line.
+   be compared line by line. `disk` lists the SATA disks, `disk read sda 0`
+   prints a sector, and `disk test sda <sector>` writes one, reads it back
+   and puts back what was there (try it on a scratch disk).
 
 Most PCs have no serial port, so on real hardware everything shows on the
 screen. If the machine crashes you get a red crash screen with the
@@ -78,6 +80,8 @@ kernel/src/acpi.c       ACPI tables: CPUs, I/O APICs, IRQ overrides, FADT, HPET,
 kernel/src/apic.c       local APIC (x2APIC when available), I/O APIC, irq_register, MSI vectors; 8259 PICs masked
 kernel/src/pci.c        PCI/PCIe: ECAM (or ports 0xcf8/0xcfc), bus scan through bridges, BARs, capabilities, MSI/MSI-X, driver table, lspci
 kernel/src/pci_test.c   PCI self-test: QEMU's edu and igb devices raise an MSI and an MSI-X
+kernel/src/ahci.c       AHCI (SATA) driver: BIOS/OS handoff, HBA reset, COMRESET, IDENTIFY, READ/WRITE DMA EXT, MSI completion
+kernel/src/block.c      block devices: block_read/block_write for every disk driver, the disk self-test, `disk`
 kernel/src/time.c       timer calibration (HPET / PM timer / PIT), 1000 Hz tick, monotonic clock, sleep_ms
 kernel/src/ps2.c        i8042 PS/2 controller, keyboard on IRQ 1, scancode set 1, LEDs
 kernel/src/keyboard.c   key codes, modifiers, US keymap, key event queue

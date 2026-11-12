@@ -3,6 +3,7 @@
 #include <acpi.h>
 #include <apic.h>
 #include <arch.h>
+#include <block.h>
 #include <console.h>
 #include <cpu.h>
 #include <errno.h>
@@ -392,6 +393,9 @@ void kmain(void) {
 
     if (pci_self_test(line, sizeof line)) ok(line);
     else warn_line(line);
+
+    if (!block_self_test(line, sizeof line)) warn_line(line);
+    else if (line[0]) ok(line);
 
     vfs_init();
     ok("VFS: tmpfs mounted on /, devfs on /dev (console, null, zero)");
